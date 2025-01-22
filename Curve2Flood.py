@@ -926,7 +926,6 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
                 w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
                 w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
                 
-                
                 (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
                 if len(r_has_bathy)>0:
                     
