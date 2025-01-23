@@ -897,7 +897,7 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
     #Bathymetry
     Bathy = np.copy(ARBathy)
     
-    Max_TW_to_Search_for_Bathy_Point = 20
+    Max_TW_to_Search_for_Bathy_Point = 13
     
     (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==0)
     print('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
@@ -925,11 +925,6 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
                 w_r_max = TW_for_WeightBox_ElipseMask+b_r_max-bathy_r
                 w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
                 w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
-                
-                print(f"b_r_min: {b_r_min}, b_r_max: {b_r_max}")
-                print(f"b_c_min: {b_c_min}, b_c_max: {b_c_max}")
-                print(f"w_r_min: {w_r_min}, w_r_max: {w_r_max}")
-                print(f"ARBathy shape: {ARBathy.shape}, ElipseMask shape: {ElipseMask.shape}")
                 
                 (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
                 if len(r_has_bathy)>0:
@@ -1072,33 +1067,74 @@ def Curve2Flood_MainFunction(input_file):
     """
     Main function that takes the input file and runs the flood mapping.
     """
-    params = read_input_file(input_file)
+    #Open the Input File
+    infile = open(input_file,'r')
+    lines = infile.readlines()
+    infile.close()
 
-    # Extract parameters
-    DEM_File = params.get("DEM_File")
-    STRM_File = params.get("Stream_File")
-    LAND_File = params.get("LU_Raster_SameRes", "")
-    LAND_WaterValue = int(params.get("LU_Water_Value", 80))
-    StrmShp_File = params.get("StrmShp_File")
-    Flood_File = params.get("OutFLD")
-    FloodImpact_File = params.get("FloodImpact_File", "")
-    FlowFileName = params.get("COMID_Flow_File") or params.get("Comid_Flow_File")
-    VDTDatabaseFileName = params.get("Print_VDT_Database", "")
-    CurveParamFileName = params.get("Print_Curve_File", "")
-    Q_Fraction = float(params.get("Q_Fraction", 1.0))
-    TopWidthPlausibleLimit = float(params.get("TopWidthPlausibleLimit", 200.0))
-    TW_MultFact = float(params.get("TW_MultFact", 1.0))
-    Set_Depth = float(params.get("Set_Depth", 0.1))
-    LocalFloodOption = params.get("LocalFloodOption", "False").lower() in ("true", "1")
-    Flood_WaterLC_and_STRM_Cells = params.get("Flood_WaterLC_and_STRM_Cells", "False").lower() in ("true", "1")
-    BathyWaterMaskFileName = params.get("BathyWaterMask", "")
-    BathyFromARFileName = params.get("BATHY_Out_File", "")
-    BathyOutputFileName = params.get("FSOutBATHY", "")
+    #If a Main Input File is given, read in the input file
+    if len(sys.argv) > 1 or len(MIF_Name_Testing)>2: 
+        DEM_File = ReadInputFile(lines,'DEM_File')
+        STRM_File = ReadInputFile(lines,'Stream_File')
+        LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
+        StrmShp_File = ReadInputFile(lines,'StrmShp_File')
+        Flood_File = ReadInputFile(lines,'OutFLD')
+        FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
+        FlowFileName = ReadInputFile(lines,'COMID_Flow_File')
+        FlowFileName = ReadInputFile(lines,'Comid_Flow_File')
+        VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
+        CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
+        Q_Fraction = ReadInputFile(lines,'Q_Fraction')
+        TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
+        TW_MultFact = ReadInputFile(lines,'TW_MultFact')
+        Set_Depth = ReadInputFile(lines,'Set_Depth')
+        Set_Depth = float(Set_Depth)
+        Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
+        Set_Depth2 = float(Set_Depth2)
+        if Set_Depth2>0.0 and Set_Depth<0.0:
+            Set_Depth = Set_Depth2
+        LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
+        LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
+        if LocalFloodOption2==True:
+            LocalFloodOption = True
+        BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
+        BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
+        BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
+        Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
+        LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
+    else:
+        print('Moving forward with Default File Names')
+        #These are the main inputs to the model
+        Q_Fraction = 1.0
+        TopWidthPlausibleLimit = 200.0
+        TW_MultFact = 1.0
+        Set_Depth = 0.1
+        LocalFloodOption = False
+        MainFolder = 'C:/Projects/2023_MultiModelFloodMapping/Yellowstone_GeoGLOWS_FABDEM/'
+        DEM_File = MainFolder + 'DEM_FABDEM/Yellowstone_FABDEM.tif' 
+        STRM_File = MainFolder + 'STRM/Yellowstone_FABDEM_STRM_Raster_Clean.tif' 
+        LAND_File = ''
+        StrmShp_File = MainFolder + 'StrmShp/Streams_714_Flow_4326_Yellowstone.shp'
+        Flood_File = MainFolder + 'FloodMap/Yellowstone_Flood_PY.tif' 
+        FloodImpact_File = '' 
+        FlowFileName = MainFolder + 'FLOW/Yellowstone_FABDEM_Flow_COMID_Q.txt'
 
-    # Print configuration for debugging
-    print("Running Curve2Flood with the following parameters:")
-    for key, value in params.items():
-        print(f"  {key}: {value}")
+        Flood_WaterLC_and_STRM_Cells = False
+        
+        #Option to input a Curve Paramater File, or the VDT_Database File
+        CurveParamFileName = MainFolder + 'VDT/Yellowstone_FABDEM_CurveFile_Initial.csv'
+        VDTDatabaseFileName = MainFolder + 'VDT/Yellowstone_FABDEM_VDT_Database_Initial.txt'
+        VDTDatabaseFileName = ''
+        
+        #Bathymetry Datasets
+        BathyWaterMaskFileName = ''
+        BathyFromARFileName = ''
+        BathyOutputFileName = ''
+    Q_Fraction = float(Q_Fraction)
+    TopWidthPlausibleLimit = float(TopWidthPlausibleLimit)
+    TW_MultFact = float(TW_MultFact)
+    
+    Model_Start_Time = datetime.now()
 
     # Replace with calls to the necessary core functions
     # Example: Reading DEM and setting up initial data
@@ -1294,6 +1330,8 @@ def Curve2Flood_MainFunction(input_file):
 
     # Example of simulated execution
     print("Flood mapping completed.")
+    Model_Simulation_Time = datetime.now() - Model_Start_Time
+    print('\n' + 'Simulation time (sec)= ' + str(Model_Simulation_Time.seconds))
 
     return
 
@@ -1322,6 +1360,8 @@ def ReadInputFile(lines,P):
         return False
     if P=='Flood_WaterLC_and_STRM_Cells':
         return False
+    if P=='LAND_WaterValue':
+        return 80
     
     return ''
 
