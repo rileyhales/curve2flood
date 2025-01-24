@@ -1083,63 +1083,33 @@ def Curve2Flood_MainFunction(input_file):
     lines = infile.readlines()
     infile.close()
 
-    #If a Main Input File is given, read in the input file
-    if len(sys.argv) > 1 or len(MIF_Name_Testing)>2: 
-        DEM_File = ReadInputFile(lines,'DEM_File')
-        STRM_File = ReadInputFile(lines,'Stream_File')
-        LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
-        StrmShp_File = ReadInputFile(lines,'StrmShp_File')
-        Flood_File = ReadInputFile(lines,'OutFLD')
-        FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
-        FlowFileName = ReadInputFile(lines,'COMID_Flow_File') or ReadInputFile(lines,'Comid_Flow_File')
-        VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
-        CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
-        Q_Fraction = ReadInputFile(lines,'Q_Fraction')
-        TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
-        TW_MultFact = ReadInputFile(lines,'TW_MultFact')
-        Set_Depth = ReadInputFile(lines,'Set_Depth')
-        Set_Depth = float(Set_Depth)
-        Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
-        Set_Depth2 = float(Set_Depth2)
-        if Set_Depth2>0.0 and Set_Depth<0.0:
-            Set_Depth = Set_Depth2
-        LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
-        LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
-        if LocalFloodOption2==True:
-            LocalFloodOption = True
-        BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
-        BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
-        BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
-        Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
-        LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
-    else:
-        LOG.warning('Moving forward with Default File Names')
-        #These are the main inputs to the model
-        Q_Fraction = 1.0
-        TopWidthPlausibleLimit = 200.0
-        TW_MultFact = 1.0
-        Set_Depth = 0.1
-        LocalFloodOption = False
-        MainFolder = 'C:/Projects/2023_MultiModelFloodMapping/Yellowstone_GeoGLOWS_FABDEM/'
-        DEM_File = MainFolder + 'DEM_FABDEM/Yellowstone_FABDEM.tif' 
-        STRM_File = MainFolder + 'STRM/Yellowstone_FABDEM_STRM_Raster_Clean.tif' 
-        LAND_File = ''
-        StrmShp_File = MainFolder + 'StrmShp/Streams_714_Flow_4326_Yellowstone.shp'
-        Flood_File = MainFolder + 'FloodMap/Yellowstone_Flood_PY.tif' 
-        FloodImpact_File = '' 
-        FlowFileName = MainFolder + 'FLOW/Yellowstone_FABDEM_Flow_COMID_Q.txt'
-
-        Flood_WaterLC_and_STRM_Cells = False
-        
-        #Option to input a Curve Paramater File, or the VDT_Database File
-        CurveParamFileName = MainFolder + 'VDT/Yellowstone_FABDEM_CurveFile_Initial.csv'
-        VDTDatabaseFileName = MainFolder + 'VDT/Yellowstone_FABDEM_VDT_Database_Initial.txt'
-        VDTDatabaseFileName = ''
-        
-        #Bathymetry Datasets
-        BathyWaterMaskFileName = ''
-        BathyFromARFileName = ''
-        BathyOutputFileName = ''
+    DEM_File = ReadInputFile(lines,'DEM_File')
+    STRM_File = ReadInputFile(lines,'Stream_File')
+    LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
+    StrmShp_File = ReadInputFile(lines,'StrmShp_File')
+    Flood_File = ReadInputFile(lines,'OutFLD')
+    FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
+    FlowFileName = ReadInputFile(lines,'COMID_Flow_File') or ReadInputFile(lines,'Comid_Flow_File')
+    VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
+    CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
+    Q_Fraction = ReadInputFile(lines,'Q_Fraction')
+    TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
+    TW_MultFact = ReadInputFile(lines,'TW_MultFact')
+    Set_Depth = ReadInputFile(lines,'Set_Depth')
+    Set_Depth = float(Set_Depth)
+    Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
+    Set_Depth2 = float(Set_Depth2)
+    if Set_Depth2>0.0 and Set_Depth<0.0:
+        Set_Depth = Set_Depth2
+    LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
+    LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
+    if LocalFloodOption2==True:
+        LocalFloodOption = True
+    BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
+    BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
+    BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
+    Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
+    LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
 
     # Some checks
     # Some checks
