@@ -3,7 +3,6 @@
 # built-in imports
 import sys
 import os
-import subprocess
 from datetime import datetime
 import json
 
@@ -18,7 +17,16 @@ except:
     from osgeo import osr
     from osgeo import ogr
     #from osgeo.gdalconst import GA_ReadOnly
-import noise
+
+# Optional numba import for speed-ups!
+try:
+    from numba import njit
+except ModuleNotFoundError:
+    def njit(*args, **kwargs):
+        def dummy_decorator(func):
+            return func
+        return dummy_decorator
+
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -27,9 +35,10 @@ from shapely.geometry import shape
 
 import rasterio
 from rasterio.features import rasterize
-from rasterio.transform import from_bounds
 
+from curve2flood import LOG
 
+gdal.UseExceptions()
 
 
 
@@ -154,7 +163,7 @@ def FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to
             i = COMID_to_ID[int(COMID)-MinCOMID]
             COMID_Unique_Flow[i] = float(Q[flow_event_num])
         except:
-            print('Could not find a Flow for ' + str(COMID))
+            LOG.warning('Could not find a Flow for ' + str(COMID))
     return
 
 
@@ -186,7 +195,7 @@ def Calculate_TW_D_ForEachCOMID(E_DEM, CurveParamFileName, COMID_Unique_Flow, CO
     COMID_Unique_TW = np.zeros(num_unique)
     COMID_Unique_Depth = np.zeros(num_unique)
     COMID_NumRecord = np.zeros(num_unique)
-    print('\nOpening and Reading ' + CurveParamFileName)
+    LOG.debug('\nOpening and Reading ' + CurveParamFileName)
 
     # read the curve data in as a Pandas dataframe
     curve_df = pd.read_csv(CurveParamFileName)
@@ -263,7 +272,7 @@ def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
 
 
 def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
-    print('\nOpening and Reading ' + VDTDatabaseFileName)
+    LOG.debug('\nOpening and Reading ' + VDTDatabaseFileName)
     
     # Read the VDT Database into a DataFrame
     vdt_df = pd.read_csv(VDTDatabaseFileName)
@@ -477,7 +486,7 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
     
 
 def Get_Raster_Details(DEM_File):
-    print(DEM_File)
+    LOG.debug(DEM_File)
     gdal.Open(DEM_File, gdal.GA_ReadOnly)
     data = gdal.Open(DEM_File)
     geoTransform = data.GetGeoTransform()
@@ -515,14 +524,14 @@ def Read_Raster_GDAL(InRAST_Name):
     lat = np.fabs((yll+yur)/2.0)
     Rast_Projection = dataset.GetProjectionRef()
     dataset = None
-    print('Spatial Data for Raster File:')
-    print('   ncols = ' + str(ncols))
-    print('   nrows = ' + str(nrows))
-    print('   cellsize = ' + str(cellsize))
-    print('   yll = ' + str(yll))
-    print('   yur = ' + str(yur))
-    print('   xll = ' + str(xll))
-    print('   xur = ' + str(xur))
+    LOG.debug('Spatial Data for Raster File:')
+    LOG.debug('   ncols = ' + str(ncols))
+    LOG.debug('   nrows = ' + str(nrows))
+    LOG.debug('   cellsize = ' + str(cellsize))
+    LOG.debug('   yll = ' + str(yll))
+    LOG.debug('   yur = ' + str(yur))
+    LOG.debug('   xll = ' + str(xll))
+    LOG.debug('   xur = ' + str(xur))
     return RastArray, ncols, nrows, cellsize, yll, yur, xll, xur, lat, geotransform, Rast_Projection
 
 def GetListOfDEMs(inputfolder):
@@ -584,14 +593,14 @@ def Convert_SHP_to_Output_Raster(output_raster, shapefile, attribute_field, ncol
     target_ds = None
     source_ds = None
 
-    print(f"Raster saved to {output_raster}")
+    LOG.info(f"Raster saved to {output_raster}")
 
 #   Convert_GDF_to_Output_Raster(Flood_File, flood_gdf, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
 def Convert_GDF_to_Output_Raster(s_output_filename, gdf, Param, ncols, nrows, dem_geotransform, dem_projection, s_file_format, s_output_type):   
-    print(s_output_filename)
+    LOG.info(s_output_filename)
 
     # Rasterize geometries
-    print('Rasterizing geometries')
+    LOG.info('Rasterizing geometries')
     shapes = ((geom, value) for geom, value in zip(gdf.geometry, gdf[Param]))  # Replace 'value_column' with your column name
     raster_data = rasterize(
         shapes=shapes,
@@ -600,7 +609,7 @@ def Convert_GDF_to_Output_Raster(s_output_filename, gdf, Param, ncols, nrows, de
         fill=0,  # Value to use for areas not covered by geometries
         dtype=s_output_type
     )
-    print('Writing output file')
+    LOG.info('Writing output file')
     # Write raster to file
     with rasterio.open(
         s_output_filename,
@@ -681,7 +690,7 @@ def Remove_Crop_Circles(flood_gdf, StrmShp_File, s_output_filename):
 
     return flood_gdf
 
-
+@njit(cache=True)
 def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
     FourMatrix = np.zeros((3,3)) + 4
     
@@ -717,7 +726,7 @@ def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
     #print(np.where(FloodLocal[1:nrows_local-1,1:ncols_local-1]>3.0,1.0,0.0))
     return np.where(FloodLocal[1:nrows_local-1,1:ncols_local-1]>3.0,1.0,0.0)
 
-
+@njit(cache=True)
 def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
     TW = int(TW_temp)  #This is the number of cells in the top-width
     ElipseMask = np.zeros((TW+1,int(TW*2+1),int(TW*2+1)))  #3D Array
@@ -749,15 +758,16 @@ def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
     
     return WeightBox, ElipseMask
 
+@njit(cache=True)
 def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth):
        
     COMID_Averaging_Method = 0
     
-    WSE_Times_Weight = np.zeros((nrows+2,ncols+2)).astype(float)
-    Total_Weight = np.zeros((nrows+2,ncols+2)).astype(float)
+    WSE_Times_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
+    Total_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
     
-    WSE_Times_Weight = np.zeros((nrows+2,ncols+2)).astype(float)
-    Total_Weight = np.zeros((nrows+2,ncols+2)).astype(float)
+    WSE_Times_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
+    Total_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
     
     #Now go through each cell
     num_nonzero = len(RR)
@@ -881,7 +891,6 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         '''
 
 
-    print('Calculating the Weighted Spatial Average for Water Surface Elevation')
     WSE_divided_by_weight = WSE_Times_Weight / Total_Weight
     
     #Also make sure all the Cells that have Stream are counted as flooded.
@@ -900,7 +909,7 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
     Max_TW_to_Search_for_Bathy_Point = 13
     
     (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==0)
-    print('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
+    LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
     num_cells_to_evaluate = len(r_cells_to_evaluate)
     if num_cells_to_evaluate>0:
         for bbb in range(num_cells_to_evaluate):
@@ -944,6 +953,8 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
 
     # Optionally add Perlin noise
     if add_noise:
+        # Move import here so as not to be a required dependency, since this is false
+        import noise
         for i in range(nrows):
             for j in range(ncols):
                 noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
@@ -966,11 +977,11 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     elif len(CurveParamFileName)>1:
         (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID(E, CurveParamFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact)
 
-    print('Maximum Top Width = ' + str(TopWidthMax))
+    LOG.info('Maximum Top Width = ' + str(TopWidthMax))
     
     for x in range(len(COMID_Unique)):
         if COMID_Unique_TW[x]>TopWidthPlausibleLimit:
-            print('Ignoring ' + str(COMID_Unique[x]) + '  ' + str(COMID_Unique_Flow[x])  + '  ' + str(COMID_Unique_Flow[x]*Q_Fraction) + '  ' + str(COMID_Unique_Depth[x]) + '  ' + str(COMID_Unique_TW[x]))             
+            LOG.warning('Ignoring ' + str(COMID_Unique[x]) + '  ' + str(COMID_Unique_Flow[x])  + '  ' + str(COMID_Unique_Flow[x]*Q_Fraction) + '  ' + str(COMID_Unique_Depth[x]) + '  ' + str(COMID_Unique_TW[x]))             
     
     if TopWidthPlausibleLimit < TopWidthMax:
         TopWidthMax = TopWidthPlausibleLimit
@@ -999,7 +1010,7 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, Mi
     
     #Create a simple Flood Map Data
     search_dist_for_min_elev = 0
-    print('Creating Rough Flood Map Data...')
+    LOG.info('Creating Rough Flood Map Data...')
     
     Flood = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth)
     return Flood[1:nrows+1,1:ncols+1]
@@ -1007,7 +1018,7 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, Mi
 
 def Set_Stream_Locations(nrows, ncols, infilename):
     S = np.zeros((nrows,ncols))  #Create an array
-    print('Opening ' + infilename)
+    LOG.info('Opening ' + infilename)
     infile = open(infilename, 'r')
     lines = infile.readlines()
     infile.close()
@@ -1072,64 +1083,44 @@ def Curve2Flood_MainFunction(input_file):
     lines = infile.readlines()
     infile.close()
 
-    #If a Main Input File is given, read in the input file
-    if len(sys.argv) > 1 or len(MIF_Name_Testing)>2: 
-        DEM_File = ReadInputFile(lines,'DEM_File')
-        STRM_File = ReadInputFile(lines,'Stream_File')
-        LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
-        StrmShp_File = ReadInputFile(lines,'StrmShp_File')
-        Flood_File = ReadInputFile(lines,'OutFLD')
-        FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
-        FlowFileName = ReadInputFile(lines,'COMID_Flow_File')
-        FlowFileName = ReadInputFile(lines,'Comid_Flow_File')
-        VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
-        CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
-        Q_Fraction = ReadInputFile(lines,'Q_Fraction')
-        TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
-        TW_MultFact = ReadInputFile(lines,'TW_MultFact')
-        Set_Depth = ReadInputFile(lines,'Set_Depth')
-        Set_Depth = float(Set_Depth)
-        Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
-        Set_Depth2 = float(Set_Depth2)
-        if Set_Depth2>0.0 and Set_Depth<0.0:
-            Set_Depth = Set_Depth2
-        LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
-        LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
-        if LocalFloodOption2==True:
-            LocalFloodOption = True
-        BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
-        BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
-        BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
-        Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
-        LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
-    else:
-        print('Moving forward with Default File Names')
-        #These are the main inputs to the model
-        Q_Fraction = 1.0
-        TopWidthPlausibleLimit = 200.0
-        TW_MultFact = 1.0
-        Set_Depth = 0.1
-        LocalFloodOption = False
-        MainFolder = 'C:/Projects/2023_MultiModelFloodMapping/Yellowstone_GeoGLOWS_FABDEM/'
-        DEM_File = MainFolder + 'DEM_FABDEM/Yellowstone_FABDEM.tif' 
-        STRM_File = MainFolder + 'STRM/Yellowstone_FABDEM_STRM_Raster_Clean.tif' 
-        LAND_File = ''
-        StrmShp_File = MainFolder + 'StrmShp/Streams_714_Flow_4326_Yellowstone.shp'
-        Flood_File = MainFolder + 'FloodMap/Yellowstone_Flood_PY.tif' 
-        FloodImpact_File = '' 
-        FlowFileName = MainFolder + 'FLOW/Yellowstone_FABDEM_Flow_COMID_Q.txt'
+    DEM_File = ReadInputFile(lines,'DEM_File')
+    STRM_File = ReadInputFile(lines,'Stream_File')
+    LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
+    StrmShp_File = ReadInputFile(lines,'StrmShp_File')
+    Flood_File = ReadInputFile(lines,'OutFLD')
+    FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
+    FlowFileName = ReadInputFile(lines,'COMID_Flow_File') or ReadInputFile(lines,'Comid_Flow_File')
+    VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
+    CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
+    Q_Fraction = ReadInputFile(lines,'Q_Fraction')
+    TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
+    TW_MultFact = ReadInputFile(lines,'TW_MultFact')
+    Set_Depth = ReadInputFile(lines,'Set_Depth')
+    Set_Depth = float(Set_Depth)
+    Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
+    Set_Depth2 = float(Set_Depth2)
+    if Set_Depth2>0.0 and Set_Depth<0.0:
+        Set_Depth = Set_Depth2
+    LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
+    LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
+    if LocalFloodOption2==True:
+        LocalFloodOption = True
+    BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
+    BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
+    BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
+    Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
+    LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
 
-        Flood_WaterLC_and_STRM_Cells = False
-        
-        #Option to input a Curve Paramater File, or the VDT_Database File
-        CurveParamFileName = MainFolder + 'VDT/Yellowstone_FABDEM_CurveFile_Initial.csv'
-        VDTDatabaseFileName = MainFolder + 'VDT/Yellowstone_FABDEM_VDT_Database_Initial.txt'
-        VDTDatabaseFileName = ''
-        
-        #Bathymetry Datasets
-        BathyWaterMaskFileName = ''
-        BathyFromARFileName = ''
-        BathyOutputFileName = ''
+    # Some checks
+    # Some checks
+    if not FlowFileName:
+        LOG.error("Flow file name is required.")
+        return
+
+    if not Flood_File:
+        LOG.error("Flood file name is required.")
+        return
+    
     Q_Fraction = float(Q_Fraction)
     TopWidthPlausibleLimit = float(TopWidthPlausibleLimit)
     TW_MultFact = float(TW_MultFact)
@@ -1138,13 +1129,13 @@ def Curve2Flood_MainFunction(input_file):
 
     # Replace with calls to the necessary core functions
     # Example: Reading DEM and setting up initial data
-    print(f"Processing DEM file: {DEM_File}")
+    LOG.info(f"Processing DEM file: {DEM_File}")
     # Placeholder for implementation of flood mapping logic
-    print("Executing flood mapping logic...")
+    LOG.info("Executing flood mapping logic...")
 
 
 
-    print('Get the Raster Dimensions for ' + DEM_File)
+    LOG.info('Get the Raster Dimensions for ' + DEM_File)
     (minx, miny, maxx, maxy, dx, dy, ncols, nrows, dem_geoTransform, dem_projection) = Get_Raster_Details(DEM_File)
     cellsize_x = abs(float(dx))
     cellsize_y = abs(float(dy))
@@ -1159,9 +1150,10 @@ def Curve2Flood_MainFunction(input_file):
     elif len(CurveParamFileName)>1:
         S = Set_Stream_Locations(nrows, ncols, CurveParamFileName)
     else:
-        print('NEED EITHER A CURVE PARAMATER FILE OR A VDT DATABASE FILE')
+        LOG.error('NEED EITHER A CURVE PARAMATER FILE OR A VDT DATABASE FILE')
+        return
         
-    print('Opening ' + DEM_File)
+    LOG.info('Opening ' + DEM_File)
     (DEM, ncols, nrows, cellsize, yll, yur, xll, xur, lat, dem_geotransform, dem_projection) = Read_Raster_GDAL(DEM_File)
 
     
@@ -1203,7 +1195,7 @@ def Curve2Flood_MainFunction(input_file):
     MinCOMID = int(COMID_Unique[0])
     MaxCOMID = int(COMID_Unique[-1])
 
-    print('\nCOMID Ranges from ' + str(MinCOMID) + ' to ' + str(MaxCOMID))
+    LOG.info('COMID Ranges from ' + str(MinCOMID) + ' to ' + str(MaxCOMID))
     
     # Initialize COMID_to_ID array
     COMID_to_ID = np.full(MaxCOMID - MinCOMID + 1, -1, dtype=int)
@@ -1215,7 +1207,7 @@ def Curve2Flood_MainFunction(input_file):
     #COMID Flow File Read-in
     num_unique = len(COMID_Unique)
     COMID_Unique_Flow = np.zeros(num_unique)
-    print('\nOpening and Reading ' + FlowFileName)
+    LOG.info('Opening and Reading ' + FlowFileName)
     infile = open(FlowFileName,'r')
     comid_file_lines = infile.readlines()
     infile.close()
@@ -1223,10 +1215,10 @@ def Curve2Flood_MainFunction(input_file):
     #Order from highest to lowest flow
     ls = comid_file_lines[1].split(',')
     num_flows = len(ls)-1
-    print('Evaluating ' + str(num_flows) + ' Flow Events')
+    LOG.info('Evaluating ' + str(num_flows) + ' Flow Events')
     
     #Creating the Weight and Eclipse Boxes
-    print('Creating the Weight and Eclipse Boxes')
+    LOG.info('Creating the Weight and Eclipse Boxes')
     TW = int( max( round(TopWidthPlausibleLimit/dx,0), round(TopWidthPlausibleLimit/dy,0) ) )  #This is how many cells we will be looking at surrounding our stream cell
     TW_for_WeightBox_ElipseMask = TW
     (WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
@@ -1240,7 +1232,7 @@ def Curve2Flood_MainFunction(input_file):
     
     #Go through all the Flow Events
     for flow_event_num in range(num_flows):
-        print('Working on Flow Event ' + str(flow_event_num))
+        LOG.info('Working on Flow Event ' + str(flow_event_num))
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
             FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to_ID, MinCOMID, COMID_Unique_Flow)
@@ -1254,26 +1246,35 @@ def Curve2Flood_MainFunction(input_file):
 
 
     # If selected, we can also flood cells based on the Land Cover and the Stream Raster
-    print(Flood_WaterLC_and_STRM_Cells)
+    LOG.info(Flood_WaterLC_and_STRM_Cells)
     if Flood_WaterLC_and_STRM_Cells==True:
-        print('Flooding the Water-Related Land Cover and STRM cells')
+        LOG.info('Flooding the Water-Related Land Cover and STRM cells')
         Flood_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LAND_File, LAND_WaterValue)
     # we dont need the S array anymore
     del(S)
 
 
 
-    
-    print('Creating Ensemble Flood Map...' + str(Flood_File))
-    # convert the raster to a geodataframe
-    flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Int32)
-    flood_gdf = Remove_Crop_Circles(flood_gdf, StrmShp_File, Flood_File)
-    shp_output_filename = f"{Flood_File[:-4]}.shp"
+    if Set_Depth < 0:
+        LOG.info('Creating Ensemble Flood Map...' + str(Flood_File))
 
-    # write the final output raster
-    #Write_Output_Raster(Flood_File, Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
-    #Convert_GDF_to_Output_Raster(Flood_File, flood_gdf, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", "int32")
-    Convert_SHP_to_Output_Raster(Flood_File, shp_output_filename, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
+    if StrmShp_File:
+            # convert the raster to a geodataframe
+        flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Int32)
+        flood_gdf = Remove_Crop_Circles(flood_gdf, StrmShp_File, Flood_File)
+        shp_output_filename = f"{Flood_File[:-4]}.shp"
+
+        # write the final output raster
+        #Write_Output_Raster(Flood_File, Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
+        #Convert_GDF_to_Output_Raster(Flood_File, flood_gdf, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", "int32")
+        Convert_SHP_to_Output_Raster(Flood_File, shp_output_filename, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
+    else:
+        # Just save as a raster
+        ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(Flood_File, ncols, nrows, 1, gdal.GDT_Byte)
+        ds.SetGeoTransform(dem_geotransform)
+        ds.SetProjection(dem_projection)
+        ds.GetRasterBand(1).SetNoDataValue(0)
+        ds.WriteArray(Flood_Ensemble.astype(np.uint8))
     
     # remove these to conserve memory
     del(comid_file_lines)
@@ -1281,12 +1282,12 @@ def Curve2Flood_MainFunction(input_file):
     
     
     #Bathymetry
-    print('Working on Bathymetry')
+    LOG.info('Working on Bathymetry')
     Bathy_Yes = 0
-    if BathyFromARFileName is not None:
+    if BathyFromARFileName is not None and BathyOutputFileName:
         Bathy_Yes = 1
-        print('Attempting to open these files to do the Bathymetry work:')
-        print('   ' + BathyFromARFileName)
+        LOG.info('Attempting to open these files to do the Bathymetry work:')
+        LOG.info('   ' + BathyFromARFileName)
         try:
             (ARBath, ncolsar, nrowsar, cellsizear, yllar, yurar, xllar, xurar, latar, dem_geotransformar, dem_projectionar) = Read_Raster_GDAL(BathyFromARFileName)
             ARBathy = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
@@ -1294,17 +1295,17 @@ def Curve2Flood_MainFunction(input_file):
             del(ARBath)
         except:
             Bathy_Yes = 0
-            print('Could not open ' + BathyFromARFileName)
+            LOG.warning('Could not open ' + BathyFromARFileName)
         
-        print('   ' + BathyWaterMaskFileName)
+        LOG.info('   ' + BathyWaterMaskFileName)
         try:
             (ARBathyMas, ncolsar, nrowsar, cellsizear, yllar, yurar, xllar, xurar, latar, dem_geotransformar, dem_projectionar) = Read_Raster_GDAL(BathyWaterMaskFileName)
             ARBathyMask = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
             ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(ARBathyMas>0,1,0)
             del(ARBathyMas)
         except:
-            print('Could not open ' + BathyWaterMaskFileName)
-            print('Going to use the Flood Map ' + Flood_File)
+            LOG.warning('Could not open ' + BathyWaterMaskFileName)
+            LOG.warning('Going to use the Flood Map ' + Flood_File)
             #ARBathyMas = np.where(~np.isnan(Flood_Ensemble), np.where(Flood_Ensemble > 0, 1, 0), 0)
             #ARBathyMask = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
             #ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(ARBathyMas>0,1,0)
@@ -1315,10 +1316,10 @@ def Curve2Flood_MainFunction(input_file):
             del(ARBathyMas)
     
     if Bathy_Yes == 0:
-        print('Not doing Bathymetry.  If you want to do bathymetry add these input cards and files:')
-        print('   BathyWaterMask')
-        print('   BATHY_Out_File')
-        print('   FSOutBATHY')
+        LOG.info('Not doing Bathymetry.  If you want to do bathymetry add these input cards and files:')
+        LOG.info('   BathyWaterMask')
+        LOG.info('   BATHY_Out_File')
+        LOG.info('   FSOutBATHY')
     
     if Bathy_Yes == 1:
         ARBathy[np.isnan(ARBathy)] = 0   #This converts all nan values to a 0
@@ -1329,9 +1330,9 @@ def Curve2Flood_MainFunction(input_file):
         Write_Output_Raster(BathyOutputFileName, Bathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
     # Example of simulated execution
-    print("Flood mapping completed.")
+    LOG.info("Flood mapping completed.")
     Model_Simulation_Time = datetime.now() - Model_Start_Time
-    print('\n' + 'Simulation time (sec)= ' + str(Model_Simulation_Time.seconds))
+    LOG.info(f'Simulation time (sec)= {Model_Simulation_Time.seconds}')
 
     return
 
@@ -1372,10 +1373,10 @@ if __name__ == "__main__":
     MIF_Name_Testing = ''
 
     if len(MIF_Name_Testing)>2:
-        print('\n\n')
-        print('WARNING, YOU ARE USING A TESTING INPUT FILE!!!!')
-        print('   ' + MIF_Name_Testing)
-        print('\n\n')
+        LOG.warning('\n\n')
+        LOG.warning('WARNING, YOU ARE USING A TESTING INPUT FILE!!!!')
+        LOG.warning('   ' + MIF_Name_Testing)
+        LOG.warning('\n\n')
 
     #If a Main Input File is given, read in the input file
     if len(sys.argv) > 1 or len(MIF_Name_Testing)>2:
@@ -1383,7 +1384,7 @@ if __name__ == "__main__":
             MIF_Name = MIF_Name_Testing
         else:
             MIF_Name = sys.argv[1]
-        print('Main Input File Given: ' + MIF_Name)
+        LOG.info('Main Input File Given: ' + MIF_Name)
         
         #Open the Input File
         infile = open(MIF_Name,'r')
@@ -1418,7 +1419,7 @@ if __name__ == "__main__":
         BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
         Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
     else:
-        print('Moving forward with Default File Names')
+        LOG.warning('Moving forward with Default File Names')
         #These are the main inputs to the model
         Q_Fraction = 1.0
         TopWidthPlausibleLimit = 200.0
@@ -1454,4 +1455,4 @@ if __name__ == "__main__":
     Model_Start_Time = datetime.now()
     Curve2Flood_MainFunction(DEM_File, STRM_File, LAND_File, watervalue, Flood_WaterLC_and_STRM_Cells, StrmShp_File, FlowFileName, CurveParamFileName, VDTDatabaseFileName, Flood_File, FloodImpact_File, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, LocalFloodOption, Set_Depth, BathyWaterMaskFileName, BathyFromARFileName, BathyOutputFileName)
     Model_Simulation_Time = datetime.now() - Model_Start_Time
-    print('\n' + 'Simulation time (sec)= ' + str(Model_Simulation_Time.seconds))
+    LOG.info('\n' + 'Simulation time (sec)= ' + str(Model_Simulation_Time.seconds))
