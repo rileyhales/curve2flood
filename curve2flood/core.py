@@ -1110,6 +1110,7 @@ def Curve2Flood_MainFunction(input_file):
     BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
     Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
     LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
+    LAND_WaterValue = int(LAND_WaterValue)
 
     # Some checks
     # Some checks
@@ -1259,7 +1260,7 @@ def Curve2Flood_MainFunction(input_file):
         LOG.info('Creating Ensemble Flood Map...' + str(Flood_File))
 
     if StrmShp_File:
-            # convert the raster to a geodataframe
+        # convert the raster to a geodataframe
         flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Int32)
         flood_gdf = Remove_Crop_Circles(flood_gdf, StrmShp_File, Flood_File)
         shp_output_filename = f"{Flood_File[:-4]}.shp"
