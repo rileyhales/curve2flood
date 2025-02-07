@@ -677,16 +677,32 @@ def Write_Output_Raster_As_GeoDataFrame(raster_data, ncols, nrows, dem_geotransf
 
     return flood_gdf
 
-def Remove_Crop_Circles(flood_gdf, StrmShp_File, s_output_filename):
+
+def Remove_Crop_Circles(flood_gdf, StrmShp_File, shp_output_filename):
+    print('Removing Crop Circles by Intersecting')
+    print('  Read Input: ' + str(StrmShp_File))
 
     strm_gdf = gpd.read_file(StrmShp_File)
+
+    #strm_gdf = strm_gdf.to_crs(flood_gdf.crs)
 
     #flood_gdf = gpd.sjoin(flood_gdf, strm_gdf, how="inner", op="intersects")
     flood_gdf = gpd.sjoin(flood_gdf, strm_gdf, how="inner", predicate="intersects")
 
-    shp_output_filename = f"{s_output_filename[:-4]}.shp"
+    if flood_gdf is None:
+        raise ValueError("GeoDataFrame is empty! Check data before saving.")
 
+    #flood_gdf.set_geometry("geometry", inplace=True)
+
+    print('Try dropping duplicate fid column (not always needed)...')
+    try:
+        flood_gdf = flood_gdf.drop_duplicates(subset=["fid"])
+        print('   Dropped the fid column')
+    except:
+        print('   No dublicate fid column')
+    
     flood_gdf.to_file(shp_output_filename)
+    print('  Wrote Output: ' + str(shp_output_filename))
 
     return flood_gdf
 
@@ -890,8 +906,13 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
                     ARBathy[bathy_r,bathy_c]=0  #Since we evaluated this one, no need to evaluate again
         '''
 
+    # divide the values in WSE_Times_Weight by the 
+    # values in Total_Weight
+    WSE_divided_by_weight = np.where(Total_Weight > 0, WSE_Times_Weight / Total_Weight, 0)
 
-    WSE_divided_by_weight = WSE_Times_Weight / Total_Weight
+
+    # WSE_divided_by_weight = WSE_Times_Weight / Total_Weight
+
     
     #Also make sure all the Cells that have Stream are counted as flooded.
     Flooded = np.where(WSE_divided_by_weight>E,1,0)
@@ -1112,7 +1133,6 @@ def Curve2Flood_MainFunction(input_file):
     LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
     LAND_WaterValue = int(LAND_WaterValue)
 
-    # Some checks
     # Some checks
     if not FlowFileName:
         LOG.error("Flow file name is required.")
