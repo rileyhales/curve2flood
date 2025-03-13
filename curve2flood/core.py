@@ -26,7 +26,6 @@ except ModuleNotFoundError:
         def dummy_decorator(func):
             return func
         return dummy_decorator
-
 import numpy as np
 import pandas as pd
 import geopandas as gpd
@@ -624,37 +623,60 @@ def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
 @njit(cache=True)
 def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
     TW = int(TW_temp)  #This is the number of cells in the top-width
-    ElipseMask = np.zeros((TW+1,int(TW*2+1),int(TW*2+1)))  #3D Array
+    # ElipseMask = np.zeros((TW+1,int(TW*2+1),int(TW*2+1)))  #3D Array
     WeightBox = np.zeros((int(TW*2+1),int(TW*2+1)))  #2D Array
-    for i in range(1,TW+1):
-        TWDX = i*dx*i*dx
-        TWDY = i*dy*i*dy
-        for r in range(0,i+1):
-            for c in range(0,i+1):
-                is_elipse = (c*dx*c*dx/(TWDX)) + (r*dy*r*dy/(TWDY))   #https://www.mathopenref.com/coordgeneralellipse.html
-                if is_elipse<=1.0:
-                    ElipseMask[i,TW+r,TW+c] = 1.0
-                    ElipseMask[i,TW-r,TW+c] = 1.0
-                    ElipseMask[i,TW+r,TW-c] = 1.0
-                    ElipseMask[i,TW-r,TW-c] = 1.0
-    #print(ElipseMask[2,TW-4:TW+4+1,TW-4:TW+4+1].astype(int))
-    #print(ElipseMask[10,TW-14:TW+14+1,TW-14:TW+14+1].astype(int))
-    #print(ElipseMask[40,TW-44:TW+44+1,TW-44:TW+44+1].astype(int))
+
+
+    # for i in range(1,TW+1):
+    #     TWDX = i*dx*i*dx
+    #     TWDY = i*dy*i*dy
+    #     for r in range(0,i+1):
+    #         for c in range(0,i+1):
+    #             is_elipse = (c*dx*c*dx/(TWDX)) + (r*dy*r*dy/(TWDY))   #https://www.mathopenref.com/coordgeneralellipse.html
+    #             if is_elipse<=1.0:
+    #                 ElipseMask[i,TW+r,TW+c] = 1.0
+    #                 ElipseMask[i,TW-r,TW+c] = 1.0
+    #                 ElipseMask[i,TW+r,TW-c] = 1.0
+    #                 ElipseMask[i,TW-r,TW-c] = 1.0
+    # print(ElipseMask[2,TW-4:TW+4+1,TW-4:TW+4+1].astype(int))
+    # print(ElipseMask[10,TW-14:TW+14+1,TW-14:TW+14+1].astype(int))
+    # print(ElipseMask[40,TW-44:TW+44+1,TW-44:TW+44+1].astype(int))
+
+
+    # --- Vectorized WeightBox creation ---
+    n = 2*TW + 1
+    # Create an array of indices [0, 1, ..., n-1]
+    indices = np.arange(n)
+    # Compute offsets from the center (center index is TW)
+    # These offsets represent the "cell distance" in each direction.
+    Y = indices - TW  # shape (n,)
+    X = indices - TW  # shape (n,)
+    # Broadcast to compute the squared distances:
+    # For every cell, z2 = (dx * (x offset))^2 + (dy * (y offset))^2.
+    # We use broadcasting: the row vector (X) and column vector (Y) combine to form an (n x n) array.
+    z2 = (X * dx)**2  # shape (n,)
+    z2 = z2[None, :] + ((Y * dy)**2)[:, None]  # shape (n, n)
+    # Avoid very small values (to prevent division by zero)
+    z2 = np.where(z2 < 0.0001, 0.0001, z2)
+    WeightBox = 1.0 / z2
     
-    for r in range(0,TW+1):
-        for c in range(0,TW+1):
-            z = pow((c*dx*c*dx + r*dy*r*dy), 0.5)
-            if z<0.0001:
-                z=0.001
-            WeightBox[TW+r,TW+c] = 1 / (z*z)
-            WeightBox[TW-r,TW+c] = 1 / (z*z)
-            WeightBox[TW+r,TW-c] = 1 / (z*z)
-            WeightBox[TW-r,TW-c] = 1 / (z*z)
+    # for r in range(0,TW+1):
+    #     for c in range(0,TW+1):
+    #         z2 = c*dx*c*dx + r*dy*r*dy
+    #         if z2<0.0001:
+    #             z2=0.001
+    #         WeightBox[TW+r,TW+c] = 1 / (z2)
+    #         WeightBox[TW-r,TW+c] = 1 / (z2)
+    #         WeightBox[TW+r,TW-c] = 1 / (z2)
+    #         WeightBox[TW-r,TW-c] = 1 / (z2)
     
-    return WeightBox, ElipseMask
+    # return WeightBox, ElipseMask
+
+    return WeightBox
+
 
 @njit(cache=True)
-def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth):
+def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth):
        
     COMID_Averaging_Method = 0
     
@@ -811,7 +833,7 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
     return Flooded
 
 
-def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
+def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
     #Bathymetry
     Bathy = np.copy(ARBathy)
     
@@ -844,7 +866,9 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, 
                 w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
                 w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
                 
-                (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
+                # (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
+                (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) > 0   )
+                
                 if len(r_has_bathy)>0:
                     
                     #This should be a list of rows and columns within the ARBathy that actually have bathymetry values
@@ -902,7 +926,7 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
-def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth):
+def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth):
     
     #These are gridded data from Curve Parameter or VDT Database File
     T_Rast = np.zeros((nrows,ncols))
@@ -921,7 +945,7 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, Mi
     search_dist_for_min_elev = 0
     LOG.info('Creating Rough Flood Map Data...')
 
-    Flood = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth)
+    Flood = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth)
     return Flood[1:nrows+1,1:ncols+1]
 
 
@@ -1130,7 +1154,8 @@ def Curve2Flood_MainFunction(input_file):
     LOG.info('Creating the Weight and Eclipse Boxes')
     TW = int( max( round(TopWidthPlausibleLimit/dx,0), round(TopWidthPlausibleLimit/dy,0) ) )  #This is how many cells we will be looking at surrounding our stream cell
     TW_for_WeightBox_ElipseMask = TW
-    (WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
+    # (WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
+    WeightBox = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
     
     
     Flood_Ensemble = np.zeros((nrows,ncols))
@@ -1145,7 +1170,7 @@ def Curve2Flood_MainFunction(input_file):
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
             FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to_ID, MinCOMID, COMID_Unique_Flow)
-        Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth)
+        Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth)
         
         Bathy_Yes = 0  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
         Flood_Ensemble = Flood_Ensemble + Flood
@@ -1239,7 +1264,7 @@ def Curve2Flood_MainFunction(input_file):
         ARBathy[np.isnan(ARBathy)] = 0   #This converts all nan values to a 0
         ARBathy = ARBathy * ARBathyMask
         ARBathy = np.where(ARBathyMask==1, ARBathy, -99)
-        Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, ElipseMask, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
+        Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
         # write the Bathy output raster
         Write_Output_Raster(BathyOutputFileName, Bathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 
