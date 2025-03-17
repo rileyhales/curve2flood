@@ -625,6 +625,7 @@ def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
     TW = int(TW_temp)  #This is the number of cells in the top-width
     # ElipseMask = np.zeros((TW+1,int(TW*2+1),int(TW*2+1)))  #3D Array
     WeightBox = np.zeros((int(TW*2+1),int(TW*2+1)))  #2D Array
+    # ElevMask = np.ones((int(TW*2+1),int(TW*2+1)))  #2D Array    #This is set and used later, and only if limit_low_elev_flooding=True
 
 
     # for i in range(1,TW+1):
@@ -676,7 +677,7 @@ def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
 
 
 @njit(cache=True)
-def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth):
+def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth, limit_low_elev_flooding=False, ElevMask=None):
        
     COMID_Averaging_Method = 0
     
@@ -770,7 +771,14 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         else:
             WSE_Times_Weight[r_min:r_max,c_min:c_max] = WSE_Times_Weight[r_min:r_max,c_min:c_max] + WSE * WeightBox[w_r_min:w_r_max,w_c_min:w_c_max]
             Total_Weight[r_min:r_max,c_min:c_max] = Total_Weight[r_min:r_max,c_min:c_max] + WeightBox[w_r_min:w_r_max,w_c_min:w_c_max]
-        
+
+        # Mike added this in February 2024, trying to limit erroneous flooding in Montana. 
+        if limit_low_elev_flooding==True:
+            #StrmElevBox = E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan)  #Get a numpy array with either stream cell elevation, or a nan value
+            #min_strm_elev = np.nanmin( E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan) )
+            min_strm_elev = E_Min = E[r_use, c_use]
+            ElevMask[w_r_min:w_r_max,w_c_min:w_c_max] = (E[r_min:r_max,c_min:c_max] >= min_strm_elev).astype(int)
+        #else the ElevMask is set to all ones
        
         # if LocalFloodOption==True:
         #     WSE_Times_Weight[r_min:r_max,c_min:c_max] = WSE_Times_Weight[r_min:r_max,c_min:c_max] + WSE * WeightBox[w_r_min:w_r_max,w_c_min:w_c_max] * ElipseMask[COMID_TW, w_r_min:w_r_max,w_c_min:w_c_max] * FloodLocalMask
@@ -926,7 +934,7 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
-def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth):
+def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, limit_low_elev_flooding=False, ElevMask=None):
     
     #These are gridded data from Curve Parameter or VDT Database File
     T_Rast = np.zeros((nrows,ncols))
