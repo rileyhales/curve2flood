@@ -772,13 +772,13 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
             WSE_Times_Weight[r_min:r_max,c_min:c_max] = WSE_Times_Weight[r_min:r_max,c_min:c_max] + WSE * WeightBox[w_r_min:w_r_max,w_c_min:w_c_max]
             Total_Weight[r_min:r_max,c_min:c_max] = Total_Weight[r_min:r_max,c_min:c_max] + WeightBox[w_r_min:w_r_max,w_c_min:w_c_max]
 
-        # Mike added this in February 2024, trying to limit erroneous flooding in Montana. 
-        if limit_low_elev_flooding==True:
-            #StrmElevBox = E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan)  #Get a numpy array with either stream cell elevation, or a nan value
-            #min_strm_elev = np.nanmin( E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan) )
-            min_strm_elev = E_Min = E[r_use, c_use]
-            ElevMask[w_r_min:w_r_max,w_c_min:w_c_max] = (E[r_min:r_max,c_min:c_max] >= min_strm_elev).astype(int)
-        #else the ElevMask is set to all ones
+        # # Mike added this in February 2024, trying to limit erroneous flooding in Montana. 
+        # if limit_low_elev_flooding==True:
+        #     #StrmElevBox = E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan)  #Get a numpy array with either stream cell elevation, or a nan value
+        #     #min_strm_elev = np.nanmin( E[r_min:r_max,c_min:c_max] * np.where(B[r_min:r_max,c_min:c_max] > 0, 1, np.nan) )
+        #     min_strm_elev = E_Min = E[r_use, c_use]
+        #     ElevMask[w_r_min:w_r_max,w_c_min:w_c_max] = (E[r_min:r_max,c_min:c_max] >= min_strm_elev).astype(int)
+        # #else the ElevMask is set to all ones
        
         # if LocalFloodOption==True:
         #     WSE_Times_Weight[r_min:r_max,c_min:c_max] = WSE_Times_Weight[r_min:r_max,c_min:c_max] + WSE * WeightBox[w_r_min:w_r_max,w_c_min:w_c_max] * ElipseMask[COMID_TW, w_r_min:w_r_max,w_c_min:w_c_max] * FloodLocalMask
