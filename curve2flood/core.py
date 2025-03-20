@@ -299,6 +299,11 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
             top_width = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
             depth = 0.001
             wse = row['Elev']
+        elif flow >= flow_values[-1]:
+            # Above the maximum flow value
+            top_width = top_width_values[-1]
+            wse = wse_values[-1]
+            depth = wse - e_dem
         else:
             # Interpolated values
             top_width = top_width_interp(flow)
