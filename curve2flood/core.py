@@ -903,15 +903,8 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, Mi
 
 def Set_Stream_Locations(nrows, ncols, infilename):
     S = np.zeros((nrows,ncols))  #Create an array
-    LOG.info('Opening ' + infilename)
-    infile = open(infilename, 'r')
-    lines = infile.readlines()
-    infile.close()
-    for i in range(1,len(lines)):
-        ls = lines[i].strip().split(',')
-        S[int(ls[1]),int(ls[2])] = int(ls[0])
-    # remove these to save memory
-    del(lines)
+    df = pd.read_csv(infilename)
+    S[df['Row'].values, df['Col'].values] = df['COMID'].values
     return S
 
 def Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LandCoverFile, watervalue):
