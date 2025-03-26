@@ -26,10 +26,12 @@ except ModuleNotFoundError:
         def dummy_decorator(func):
             return func
         return dummy_decorator
+    
 import numpy as np
 import pandas as pd
 import geopandas as gpd
 from scipy.interpolate import interp1d
+from scipy.ndimage import label, generate_binary_structure
 from shapely.geometry import shape
 
 import rasterio
@@ -244,7 +246,6 @@ def Calculate_TW_D_ForEachCOMID(E_DEM, CurveParamFileName, COMID_Unique_Flow, CO
 
     return (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast)
 
-@njit(cache=True)
 def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
     """
     Find the TopWidth corresponding to the baseflow (QB).
@@ -257,12 +258,12 @@ def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
     Returns:
         float: TopWidth corresponding to QB.
     """
-    for i in range(len(flow_values)):
-        if QB <= flow_values[i]:
-            return top_width_values[i]
-    # If QB is larger than all flow values, return the last TopWidth
-    return top_width_values[-1]
-
+    # for i in range(len(flow_values)):
+    #     if QB <= flow_values[i]:
+    #         return top_width_values[i]
+    # # If QB is larger than all flow values, return the last TopWidth
+    # return top_width_values[-1]
+    return top_width_values.iloc[flow_values.searchsorted(QB)]
 
 def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
     LOG.debug('\nOpening and Reading ' + VDTDatabaseFileName)
@@ -274,50 +275,48 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
     comid_flow_df = pd.DataFrame({'COMID': COMID_Unique, 'Flow': COMID_Unique_Flow})
     vdt_df = vdt_df.merge(comid_flow_df, on='COMID', how='left')
     
-    # Extract the columns for interpolation
-    flow_cols = [col for col in vdt_df.columns if col.startswith('q_')]
-    top_width_cols = [col for col in vdt_df.columns if col.startswith('t_')]
-    wse_cols = [col for col in vdt_df.columns if col.startswith('wse_')]
+    # Extract the column indices for interpolation
+    flow_cols = [list(vdt_df.columns).index(col) for col in vdt_df.columns if col.startswith('q_')]
+    top_width_cols = [list(vdt_df.columns).index(col) for col in vdt_df.columns if col.startswith('t_')]
+    wse_cols = [list(vdt_df.columns).index(col) for col in vdt_df.columns if col.startswith('wse_')]
 
     # Define the function to calculate TopWidth, Depth, and WSE for each row
-    def calculate_values(row):
+    def calculate_values(row: pd.Series):
         flow = row['Flow']
         qb = row['QBaseflow']
         e_dem = E_DEM[int(row['Row']) + 1, int(row['Col']) + 1]
 
         # Extract flow, TopWidth, and WSE values for interpolation
-        flow_values = row[flow_cols].values
-        top_width_values = row[top_width_cols].values
-        wse_values = row[wse_cols].values
-
+        flow_values = row.iloc[flow_cols]
+        top_width_values = row.iloc[top_width_cols]
         # Interpolation functions
-        top_width_interp = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')
-        wse_interp = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')
 
         if flow <= qb:
             # Below baseflow
             top_width = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
             depth = 0.001
             wse = row['Elev']
-        elif flow >= flow_values[-1]:
+        elif flow >= flow_values.iloc[-1]:
+            wse_values = row.iloc[wse_cols]
             # Above the maximum flow value
-            top_width = top_width_values[-1]
-            wse = wse_values[-1]
+            top_width = top_width_values.iloc[-1]
+            wse = wse_values.iloc[-1]
             depth = wse - e_dem
         else:
+            wse_values = row.iloc[wse_cols]
+            wse = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
+            top_width = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
             # Interpolated values
-            top_width = top_width_interp(flow)
-            wse = wse_interp(flow)
             wse = max(wse, e_dem)
             depth = wse - e_dem
 
         # Ensure TopWidth respects baseflow and scale
         baseflow_tw = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
         top_width = max(top_width, baseflow_tw) * TW_MultFact
-        return pd.Series({'TopWidth': top_width, 'Depth': depth, 'WSE': wse})
+        return pd.Series([top_width, depth, wse])
 
     # Apply the calculation function to each row
-    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1))
+    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
 
     # had some issues with values being stored as arrays, so convert them to floats here
     vdt_df['TopWidth'] = vdt_df['TopWidth'].apply(lambda x: x.item() if isinstance(x, np.ndarray) else x)
@@ -403,7 +402,7 @@ def Read_Raster_GDAL(InRAST_Name):
     cellsize = geotransform[1]
     yll = geotransform[3] - nrows * np.fabs(geotransform[5])
     yur = geotransform[3]
-    xll = geotransform[0];
+    xll = geotransform[0]
     xur = xll + (ncols)*geotransform[1]
     lat = np.fabs((yll+yur)/2.0)
     Rast_Projection = dataset.GetProjectionRef()
@@ -445,39 +444,6 @@ def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotra
     # Once we're done, close properly the dataset
     o_output_file = None
 
-def Convert_SHP_to_Output_Raster(output_raster, shapefile, attribute_field, ncols, nrows, geotransform, dem_projection, s_file_format, s_output_type):
-      # Raster properties
-    no_data_value = np.nan  # Value for pixels without data
-
-    # Open the shapefile
-    source_ds = ogr.Open(shapefile)
-    source_layer = source_ds.GetLayer()
-
-    # Create a raster dataset
-    target_ds = gdal.GetDriverByName(s_file_format).Create(output_raster, xsize=ncols, ysize=nrows, bands=1, eType=s_output_type)
-
-    # Set the spatial reference system
-    spatial_ref = source_layer.GetSpatialRef()
-    target_ds.SetProjection(spatial_ref.ExportToWkt())
-
-    # Set the geotransform
-    target_ds.SetGeoTransform(geotransform)
-
-    # Set the NoData value
-    band = target_ds.GetRasterBand(1)
-    band.SetNoDataValue(no_data_value)
-
-    # Rasterize the shapefile
-    gdal.RasterizeLayer(target_ds, [1], source_layer, options=[
-        f"ATTRIBUTE={attribute_field}"
-    ])
-
-    # Close the datasets
-    band.FlushCache()
-    target_ds = None
-    source_ds = None
-
-    LOG.info(f"Raster saved to {output_raster}")
 
 #   Convert_GDF_to_Output_Raster(Flood_File, flood_gdf, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
 def Convert_GDF_to_Output_Raster(s_output_filename, gdf, Param, ncols, nrows, dem_geotransform, dem_projection, s_file_format, s_output_type):   
@@ -561,33 +527,6 @@ def Write_Output_Raster_As_GeoDataFrame(raster_data, ncols, nrows, dem_geotransf
 
     return flood_gdf
 
-
-def Remove_Crop_Circles(flood_gdf, StrmShp_File, shp_output_filename):
-    LOG.info('Removing Crop Circles by Intersecting')
-    LOG.info('  Read Input: ' + str(StrmShp_File))
-
-    strm_gdf = gpd.read_file(StrmShp_File)
-
-    #strm_gdf = strm_gdf.to_crs(flood_gdf.crs)
-
-    flood_gdf: gpd.GeoDataFrame = gpd.sjoin(flood_gdf, strm_gdf, how="inner", predicate="intersects")
-
-    if flood_gdf is None:
-        raise ValueError("GeoDataFrame is empty! Check data before saving.")
-
-    #flood_gdf.set_geometry("geometry", inplace=True)
-
-    LOG.info('Try dropping duplicate fid column (not always needed)...')
-    try:
-        flood_gdf = flood_gdf.drop_duplicates(subset=["fid"])
-        LOG.info('   Dropped the fid column')
-    except:
-        LOG.info('   No dublicate fid column')
-    
-    flood_gdf.to_file(shp_output_filename)
-    LOG.info('  Wrote Output: ' + str(shp_output_filename))
-
-    return flood_gdf
 
 @njit(cache=True)
 def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
@@ -1019,6 +958,44 @@ def read_input_file(input_file):
                 params[key] = value
     return params
 
+def remove_cells_not_connected(flood_array: np.ndarray, streams_array: np.ndarray) -> np.ndarray:
+    """
+    This function identifies connected components in the first raster and retains only those components 
+    that are (hydraulically) connected to positive cells in the second raster. Connectivity is defined as 8-connected 
+    (including edges and corners).
+    Parameters:
+    -----------
+    flood_array : np.ndarray
+        A 2D array representing the first raster. Cells with positive values are considered for connectivity.
+    streams_array : np.ndarray
+        A 2D array representing the second raster. Positive cells in this raster determine the valid connections.
+    Returns:
+    --------
+    np.ndarray
+        A 2D array where cells in `flood_array` that are not connected to positive cells in `streams_array` are removed 
+        (set to zero). The output retains the shape of `flood_array`.
+    Notes:
+    ------
+    - Connectivity is determined using an 8-connected neighborhood, which includes horizontal, vertical, 
+      and diagonal neighbors.
+    - The function uses labeled connected components to identify and filter regions in `flood_array`.
+    """
+
+    # Define connectivity (8-connected: edges + corners)
+    structure = generate_binary_structure(2, 2)
+    
+    # Label connected components in flood_array
+    labeled_array, num_features = label(flood_array > 0, structure)
+    
+    # Find labels that connect to positive cells in streams_array
+    touching_labels = np.unique(labeled_array[(streams_array > 0) & (labeled_array > 0)])
+    
+    # Create mask of valid regions
+    mask = np.isin(labeled_array, touching_labels)
+    
+    # Keep only connected chunks in flood_array
+    return flood_array * mask
+
 def Curve2Flood_MainFunction(input_file):
 
     """
@@ -1185,7 +1162,7 @@ def Curve2Flood_MainFunction(input_file):
             FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to_ID, MinCOMID, COMID_Unique_Flow)
         Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth)
         
-        Bathy_Yes = 0  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
+        Bathy_Yes = False  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
         Flood_Ensemble = Flood_Ensemble + Flood
     
     #Turn into a percentage
@@ -1197,36 +1174,29 @@ def Curve2Flood_MainFunction(input_file):
     if Flood_WaterLC_and_STRM_Cells==True:
         LOG.info('Flooding the Water-Related Land Cover and STRM cells')
         Flood_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LAND_File, LAND_WaterValue)
-    # we dont need the S array anymore
-    del(S)
-
-
 
     if Set_Depth < 0:
         LOG.info('Creating Ensemble Flood Map...' + str(Flood_File))
 
+    # Remove crop circles and other disconnected cells
+    flood_ensemble_corrected = remove_cells_not_connected(Flood_Ensemble, S)
+
+    # Write the output raster
+    out_ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(Flood_File, ncols, nrows, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "PREDICTOR=2"])
+    out_ds.SetGeoTransform(dem_geotransform)
+    out_ds.SetProjection(dem_projection)
+    out_ds.WriteArray(flood_ensemble_corrected)
+    out_ds.FlushCache()
+
     if StrmShp_File:
         # convert the raster to a geodataframe
-        flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Int32)
+        flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Byte)
         
         # the name of our flood shapefile
         shp_output_filename = f"{Flood_File[:-4]}.gpkg"
-        
-        # Removes crop circles and outputs the flood shapefile
-        flood_gdf = Remove_Crop_Circles(flood_gdf, StrmShp_File, shp_output_filename)
-        
 
-        # write the final output raster
-        #Write_Output_Raster(Flood_File, Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
-        #Convert_GDF_to_Output_Raster(Flood_File, flood_gdf, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", "int32")
-        Convert_SHP_to_Output_Raster(Flood_File, shp_output_filename, 'Value', ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Int32)
-    else:
-        # Just save as a raster
-        ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(Flood_File, ncols, nrows, 1, gdal.GDT_Byte)
-        ds.SetGeoTransform(dem_geotransform)
-        ds.SetProjection(dem_projection)
-        ds.GetRasterBand(1).SetNoDataValue(0)
-        ds.WriteArray(Flood_Ensemble.astype(np.uint8))
+        # save the geodataframe (do not specify the driver, it will be inferred from the file extension)
+        flood_gdf.to_file(shp_output_filename)
     
     # remove these to conserve memory
     del(comid_file_lines)
@@ -1235,9 +1205,9 @@ def Curve2Flood_MainFunction(input_file):
     
     #Bathymetry
     LOG.info('Working on Bathymetry')
-    Bathy_Yes = 0
+    Bathy_Yes = False
     if BathyFromARFileName is not None and BathyOutputFileName:
-        Bathy_Yes = 1
+        Bathy_Yes = True
         LOG.info('Attempting to open these files to do the Bathymetry work:')
         LOG.info('   ' + BathyFromARFileName)
         try:
@@ -1246,7 +1216,7 @@ def Curve2Flood_MainFunction(input_file):
             ARBathy[1:(nrows+1), 1:(ncols+1)] = ARBath
             del(ARBath)
         except:
-            Bathy_Yes = 0
+            Bathy_Yes = False
             LOG.warning('Could not open ' + BathyFromARFileName)
         
         LOG.info('   ' + BathyWaterMaskFileName)
@@ -1267,19 +1237,19 @@ def Curve2Flood_MainFunction(input_file):
             ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(~np.isnan(ARBathyMas), np.where(ARBathyMas > 0, 1, 0), 0)
             del(ARBathyMas)
     
-    if Bathy_Yes == 0:
-        LOG.info('Not doing Bathymetry.  If you want to do bathymetry add these input cards and files:')
-        LOG.info('   BathyWaterMask')
-        LOG.info('   BATHY_Out_File')
-        LOG.info('   FSOutBATHY')
-    
-    if Bathy_Yes == 1:
+    if Bathy_Yes:
         ARBathy[np.isnan(ARBathy)] = 0   #This converts all nan values to a 0
         ARBathy = ARBathy * ARBathyMask
         ARBathy = np.where(ARBathyMask==1, ARBathy, -99)
         Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
         # write the Bathy output raster
         Write_Output_Raster(BathyOutputFileName, Bathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
+    else:
+        LOG.info('Not doing Bathymetry.  If you want to do bathymetry add these input cards and files:')
+        LOG.info('   BathyWaterMask')
+        LOG.info('   BATHY_Out_File')
+        LOG.info('   FSOutBATHY')
+    
 
     # Example of simulated execution
     LOG.info("Flood mapping completed.")
