@@ -1,3 +1,4 @@
+numba
 numpy
 pandas
 gdal
@@ -5,3 +6,4 @@ rasterio
 geopandas
 shapely
 scipy
+tqdm

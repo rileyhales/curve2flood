@@ -6,7 +6,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="Curve2Flood",
-    version="0.1.4",
+    version="0.1.5",
     description="Flood mapping tool based on DEM and other inputs.",
     author="Michael Follum",
     author_email="mike@follumhydro.com",
@@ -20,6 +20,8 @@ setup(
         "geopandas",
         "shapely",
         "scipy",
+        "numba",
+        "tqdm"
     ],
     entry_points={
         "console_scripts": [

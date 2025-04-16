@@ -33,6 +33,7 @@ import geopandas as gpd
 from scipy.interpolate import interp1d
 from scipy.ndimage import label, generate_binary_structure
 from shapely.geometry import shape
+import tqdm 
 
 import rasterio
 from rasterio.features import rasterize
@@ -263,7 +264,12 @@ def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
     #         return top_width_values[i]
     # # If QB is larger than all flow values, return the last TopWidth
     # return top_width_values[-1]
-    return top_width_values.iloc[flow_values.searchsorted(QB)]
+    try:
+        top_width_at_baseflow = top_width_values.iloc[flow_values.searchsorted(QB)]
+    except:
+        # just use the smallest top-width if we can't find it
+        top_width_at_baseflow = top_width_values.min()
+    return top_width_at_baseflow
 
 def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
     LOG.debug('\nOpening and Reading ' + VDTDatabaseFileName)
@@ -313,10 +319,14 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
         # Ensure TopWidth respects baseflow and scale
         baseflow_tw = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
         top_width = max(top_width, baseflow_tw) * TW_MultFact
-        return pd.Series([top_width, depth, wse])
+        # return pd.Series([top_width, depth, wse])
+        return[ top_width, depth, wse]
 
+    tqdm.tqdm.pandas(desc="Calculating from VDT", unit="rows")
     # Apply the calculation function to each row
-    vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
+    # vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
+    vdt_df = vdt_df.join(vdt_df.progress_apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
+
 
     # had some issues with values being stored as arrays, so convert them to floats here
     vdt_df['TopWidth'] = vdt_df['TopWidth'].apply(lambda x: x.item() if isinstance(x, np.ndarray) else x)
@@ -338,9 +348,11 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
     vdt_df = vdt_df.dropna(subset=['TopWidth', 'Depth', 'WSE'])
     
     # Fill T_Rast and W_Rast
-    for _, row in vdt_df.iterrows():
-        T_Rast[int(row['Row']), int(row['Col'])] = row['TopWidth']
-        W_Rast[int(row['Row']), int(row['Col'])] = row['WSE']
+    # for _, row in vdt_df.iterrows():
+    #     T_Rast[int(row['Row']), int(row['Col'])] = row['TopWidth']
+    #     W_Rast[int(row['Row']), int(row['Col'])] = row['WSE']
+    T_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['TopWidth']
+    W_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['WSE']
     
     # Calculate median values by COMID
     mean_values = vdt_df.groupby('COMID').agg({
@@ -785,14 +797,16 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
     return Flooded
 
 
-def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
+# def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
+@njit(cache=True)
+def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask):
     #Bathymetry
     Bathy = np.copy(ARBathy)
     
     Max_TW_to_Search_for_Bathy_Point = 13
     
     (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==0)
-    LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
+    # LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
     num_cells_to_evaluate = len(r_cells_to_evaluate)
     if num_cells_to_evaluate>0:
         for bbb in range(num_cells_to_evaluate):
@@ -813,10 +827,10 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_Weigh
                 if b_c_max>(ncols+1):
                     b_c_max=ncols+1
                 
-                w_r_min = TW_for_WeightBox_ElipseMask-(bathy_r-b_r_min)
-                w_r_max = TW_for_WeightBox_ElipseMask+b_r_max-bathy_r
-                w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
-                w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
+                # w_r_min = TW_for_WeightBox_ElipseMask-(bathy_r-b_r_min)
+                # w_r_max = TW_for_WeightBox_ElipseMask+b_r_max-bathy_r
+                # w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
+                # w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
                 
                 # (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
                 (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) > 0   )
@@ -831,24 +845,49 @@ def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_Weigh
                     w_r = TW_for_WeightBox_ElipseMask-(r_has_bathy-b_r_min)
                     w_c = TW_for_WeightBox_ElipseMask-(c_has_bathy-b_c_min)
                     
-                    Bathy[bathy_r,bathy_c] = (ARBathy[r_has_bathy,c_has_bathy] * WeightBox[w_r,w_c]).sum() / WeightBox[w_r,w_c].sum()
+                    # Bathy[bathy_r,bathy_c] = (ARBathy[r_has_bathy,c_has_bathy] * WeightBox[w_r,w_c]).sum() / WeightBox[w_r,w_c].sum()
+                    total = 0.0
+                    weight_total = 0.0
+                    for i in range(len(r_has_bathy)):
+                        r = r_has_bathy[i]
+                        c = c_has_bathy[i]
+                        w_r_i = w_r[i]
+                        w_c_i = w_c[i]
+                        val = ARBathy[r, c]
+                        weight = WeightBox[w_r_i, w_c_i]
+                        total += val * weight
+                        weight_total += weight
+
+                    if weight_total > 0:
+                        Bathy[bathy_r, bathy_c] = total / weight_total
                     #print(Bathy[bathy_r,bathy_c])
 
     Bathy = np.where(Bathy>0, Bathy, E)
 
-    # Optionally add Perlin noise
-    if add_noise:
-        # Move import here so as not to be a required dependency, since this is false
-        import noise
-        for i in range(nrows):
-            for j in range(ncols):
-                noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
-                                            octaves=noise_octaves, 
-                                            persistence=noise_persistence, 
-                                            lacunarity=noise_lacunarity)
-                Bathy[i, j] += noise_value
+    # # Optionally add Perlin noise
+    # if add_noise:
+    #     # Move import here so as not to be a required dependency, since this is false
+    #     import noise
+    #     for i in range(nrows):
+    #         for j in range(ncols):
+    #             noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
+    #                                         octaves=noise_octaves, 
+    #                                         persistence=noise_persistence, 
+    #                                         lacunarity=noise_lacunarity)
+    #             Bathy[i, j] += noise_value
 
     return Bathy[1:nrows+1, 1:ncols+1]
+
+def add_noise(Bathy: np.ndarray, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
+    # Move import here so as not to be a required dependency, since this is false
+    import noise
+    for i in range(Bathy.shape[0]):
+        for j in range(Bathy.shape[1]):
+            noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
+                                        octaves=noise_octaves, 
+                                        persistence=noise_persistence, 
+                                        lacunarity=noise_lacunarity)
+            Bathy[i, j] += noise_value
 
 def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth):
     if Set_Depth>0.0:
@@ -1234,7 +1273,11 @@ def Curve2Flood_MainFunction(input_file):
         ARBathy[np.isnan(ARBathy)] = 0   #This converts all nan values to a 0
         ARBathy = ARBathy * ARBathyMask
         ARBathy = np.where(ARBathyMask==1, ARBathy, -99)
-        Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
+        # Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
+        Bathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask)
+        # Optionally add Perlin noise
+        if False:
+            add_noise(Bathy)
         # write the Bathy output raster
         Write_Output_Raster(BathyOutputFileName, Bathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
     else:
