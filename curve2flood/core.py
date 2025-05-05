@@ -192,7 +192,7 @@ def filter_outliers(group):
     group = group[(group['WSE'] >= lower_bound_wse) & (group['WSE'] <= upper_bound_wse)]
     return group
 
-def Calculate_TW_D_ForEachCOMID(E_DEM, CurveParamFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
+def Calculate_TW_D_ForEachCOMID(E_DEM, CurveParamFileName: str, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
     num_unique = len(COMID_Unique)
     COMID_Unique_TW = np.zeros(num_unique)
     COMID_Unique_Depth = np.zeros(num_unique)
@@ -200,7 +200,10 @@ def Calculate_TW_D_ForEachCOMID(E_DEM, CurveParamFileName, COMID_Unique_Flow, CO
     LOG.debug('\nOpening and Reading ' + CurveParamFileName)
 
     # read the curve data in as a Pandas dataframe
-    curve_df = pd.read_csv(CurveParamFileName)
+    if CurveParamFileName.endswith('.parquet'):
+        curve_df = pd.read_parquet(CurveParamFileName)
+    else:
+        curve_df = pd.read_csv(CurveParamFileName)
 
     # Reading the COMID and flow data in as Pandas dataframes
     streamflow_df = pd.DataFrame()
@@ -271,11 +274,14 @@ def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
         top_width_at_baseflow = top_width_values.min()
     return top_width_at_baseflow
 
-def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact):
+def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COMID_Unique_Flow, COMID_Unique, T_Rast, W_Rast, TW_MultFact, quiet: bool):    
     LOG.debug('\nOpening and Reading ' + VDTDatabaseFileName)
     
     # Read the VDT Database into a DataFrame
-    vdt_df = pd.read_csv(VDTDatabaseFileName)
+    if VDTDatabaseFileName.endswith('.parquet'):
+        vdt_df = pd.read_parquet(VDTDatabaseFileName)
+    else:
+        vdt_df = pd.read_csv(VDTDatabaseFileName)
     
     # Add COMID flow information
     comid_flow_df = pd.DataFrame({'COMID': COMID_Unique, 'Flow': COMID_Unique_Flow})
@@ -322,9 +328,8 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName, COMID_Un
         # return pd.Series([top_width, depth, wse])
         return[ top_width, depth, wse]
 
-    tqdm.tqdm.pandas(desc="Calculating from VDT", unit="rows")
+    tqdm.tqdm.pandas(desc="Calculating from VDT", unit="rows", disable=quiet)
     # Apply the calculation function to each row
-    # vdt_df = vdt_df.join(vdt_df.apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
     vdt_df = vdt_df.join(vdt_df.progress_apply(calculate_values, axis=1, result_type='expand').rename(columns={0: 'TopWidth', 1: 'Depth', 2: 'WSE'}))
 
 
@@ -442,8 +447,8 @@ def Write_Output_Raster(s_output_filename, raster_data, ncols, nrows, dem_geotra
     #o_metadata = o_driver.GetMetadata()
     
     # Construct the file with the appropriate data shape
-    o_output_file = o_driver.Create(s_output_filename, xsize=ncols, ysize=nrows, bands=1, eType=s_output_type)
-    
+    o_output_file = o_driver.Create(s_output_filename, xsize=ncols, ysize=nrows, bands=1, eType=s_output_type, options=["COMPRESS=LZW", 'PREDICTOR=2'])    
+
     # Set the geotransform
     o_output_file.SetGeoTransform(dem_geotransform)
     
@@ -542,7 +547,7 @@ def Write_Output_Raster_As_GeoDataFrame(raster_data, ncols, nrows, dem_geotransf
 
 @njit(cache=True)
 def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
-    FourMatrix = np.zeros((3,3)) + 4
+    FourMatrix = np.full((3, 3), 4)
     
     nrows_local = r_max-r_min+2
     ncols_local = c_max-c_min+2
@@ -640,9 +645,6 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
     WSE_Times_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
     Total_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
     
-    WSE_Times_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
-    Total_Weight = np.zeros((nrows+2,ncols+2), dtype=float)
-    
     #Now go through each cell
     num_nonzero = len(RR)
     for i in range(num_nonzero):
@@ -677,10 +679,8 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         
         if COMID_TW_m > TW_m:
             COMID_TW_m = TW_m
-        COMID_TW = int(max(round(COMID_TW_m/dx,0),round(COMID_TW_m/dy,0)))  #This is how many cells we will be looking at surrounding our stream cell
-        
-        if COMID_TW<=1:
-            COMID_TW=2
+
+        COMID_TW = max(round(COMID_TW_m / dx), round(COMID_TW_m / dy))  #This is how many cells we will be looking at surrounding our stream cell
         
         #Find minimum elevation within the search box
         if sd<1:
@@ -693,20 +693,11 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
                         E_Min = E[rr,cc]
                         r_use = rr
                         c_use = cc
-        
-        
-        r_min = r_use-COMID_TW
-        r_max = r_use+COMID_TW+1
-        if r_min<1:
-            r_min = 1 
-        if r_max>(nrows+1):
-            r_max=nrows+1
-        c_min = c_use-COMID_TW
-        c_max = c_use+COMID_TW+1
-        if c_min<1:
-            c_min = 1 
-        if c_max>(ncols+1):
-            c_max=ncols+1
+            
+        r_min = max(r_use - COMID_TW, 1)
+        r_max = min(r_use + COMID_TW + 1, nrows + 1)
+        c_min = max(c_use - COMID_TW, 1)
+        c_max = min(c_use + COMID_TW + 1, ncols + 1)
         
         #Find what would flood local
         if LocalFloodOption==True:
@@ -876,7 +867,7 @@ def gaussian_blur_numba_full(image, sigma):
                     ii = i - pad + ki
                     jj = j - pad + kj
                     val = padded_image[ii, jj]
-                    if val != -9999.0:  # Check for valid pixel
+                    if val != -9999:  # Check for valid pixel
                         acc += val * kernel[ki, kj]
                         weight_sum += kernel[ki, kj]
             if weight_sum > 0:
@@ -895,27 +886,22 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
     
     Max_TW_to_Search_for_Bathy_Point = 13
     
-    (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==-99)
+    (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==-99.000)
     # LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
     num_cells_to_evaluate = len(r_cells_to_evaluate)
     if num_cells_to_evaluate>0:
+
+        filled = False  # Flag to track if we succeed
+
         for bbb in range(num_cells_to_evaluate):
             bathy_r = r_cells_to_evaluate[bbb]
             bathy_c = c_cells_to_evaluate[bbb]
             
             for COMID_TW_Bathy in range(1,Max_TW_to_Search_for_Bathy_Point):
-                b_r_min = bathy_r-COMID_TW_Bathy
-                b_r_max = bathy_r+COMID_TW_Bathy+1
-                if b_r_min<1:
-                    b_r_min = 1 
-                if b_r_max>(nrows+1):
-                    b_r_max=nrows+1
-                b_c_min = bathy_c-COMID_TW_Bathy
-                b_c_max = bathy_c+COMID_TW_Bathy+1
-                if b_c_min<1:
-                    b_c_min = 1 
-                if b_c_max>(ncols+1):
-                    b_c_max=ncols+1
+                b_r_min = max(bathy_r - COMID_TW_Bathy, 1)
+                b_r_max = min(bathy_r + COMID_TW_Bathy + 1, nrows + 1)
+                b_c_min = max(bathy_c - COMID_TW_Bathy, 1)
+                b_c_max = min(bathy_c + COMID_TW_Bathy + 1, ncols + 1)
                 
                 # w_r_min = TW_for_WeightBox_ElipseMask-(bathy_r-b_r_min)
                 # w_r_max = TW_for_WeightBox_ElipseMask+b_r_max-bathy_r
@@ -923,7 +909,7 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
                 # w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
                 
                 # (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
-                (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) > 0   )
+                (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) >-99.000   )
                 
                 if len(r_has_bathy)>0:
                     
@@ -953,18 +939,37 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
 
                     if weight_total > 0:
                         Bathy[bathy_r, bathy_c] = total / weight_total
+                        filled = True
                     #print(Bathy[bathy_r,bathy_c])
+
+
+    # Fill any remaining -99.000 with nearest valid value ---
+    missing_mask = (Bathy<=-99.000) 
+
+    if np.any(missing_mask):
+        valid_mask = ~missing_mask
+
+        # Get coordinates of valid and missing points
+        valid_coords = np.argwhere(valid_mask)
+        missing_coords = np.argwhere(missing_mask)
+
+        # For each missing point, find the nearest valid point and assign its value
+        for mr, mc in missing_coords:
+            # Compute distances to all valid points
+            distances = np.sqrt((valid_coords[:,0] - mr)**2 + (valid_coords[:,1] - mc)**2)
+            nearest_idx = np.argmin(distances)
+            nearest_r, nearest_c = valid_coords[nearest_idx]
+            Bathy[mr, mc] = Bathy[nearest_r, nearest_c]
 
     # smooth the bathymetry before we finish
     sigma_value = 1.0
     Bathy = gaussian_blur_numba_full(Bathy, sigma=sigma_value)
 
     # filter out any bathy data not in the water mask
-    Bathy = np.where(ARBathyMask==1, Bathy, -9999)   
+    Bathy = np.where(ARBathyMask==1, Bathy, -9999.000)   
 
-    # create the composite topobathymetric dataset
-    Bathy = np.where(Bathy!=-9999, Bathy, E)
-    Bathy = np.where(Bathy!=-99, Bathy, E)
+    # Replace *any remaining bad values*, including -99, -9999, or NaN
+    Bathy = np.where(Bathy<=-99, E, Bathy)
 
     # # Optionally add Perlin noise
     # if add_noise:
@@ -992,7 +997,7 @@ def add_noise(Bathy: np.ndarray, noise_scale=0.1, noise_octaves=1, noise_persist
                                         lacunarity=noise_lacunarity)
             Bathy[i, j] += noise_value
 
-def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth):
+def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet):
     if Set_Depth>0.0:
         num_unique = len(COMID_Unique)
         COMID_Unique_TW = np.ones(num_unique, dtype=float) * TopWidthPlausibleLimit
@@ -1000,16 +1005,17 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
         TopWidthMax = TopWidthPlausibleLimit 
     #Mike switched to default to VDT Database instead of Curve.  We can change this in the future.
     elif len(VDTDatabaseFileName)>1:
-        (COMID_Unique_TW, COMID_Unique_Depth, COMID_Unique_WSE, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID_VDTDatabase(E, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact)
+        (COMID_Unique_TW, COMID_Unique_Depth, COMID_Unique_WSE, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID_VDTDatabase(E, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, T_Rast, W_Rast, TW_MultFact, quiet)
     elif len(CurveParamFileName)>1:
         (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID(E, CurveParamFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact)
 
     LOG.info('Maximum Top Width = ' + str(TopWidthMax))
     
-    for x in range(len(COMID_Unique)):
-        if COMID_Unique_TW[x]>TopWidthPlausibleLimit:
-            LOG.warning('Ignoring ' + str(COMID_Unique[x]) + '  ' + str(COMID_Unique_Flow[x])  + '  ' + str(COMID_Unique_Flow[x]*Q_Fraction) + '  ' + str(COMID_Unique_Depth[x]) + '  ' + str(COMID_Unique_TW[x]))             
-    
+    if not quiet:
+        for x in range(len(COMID_Unique)):
+            if COMID_Unique_TW[x]>TopWidthPlausibleLimit:
+                LOG.warning('Ignoring ' + str(COMID_Unique[x]) + '  ' + str(COMID_Unique_Flow[x])  + '  ' + str(COMID_Unique_Flow[x]*Q_Fraction) + '  ' + str(COMID_Unique_Depth[x]) + '  ' + str(COMID_Unique_TW[x]))     
+
     if TopWidthPlausibleLimit < TopWidthMax:
         TopWidthMax = TopWidthPlausibleLimit
     
@@ -1020,18 +1026,16 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
-def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, limit_low_elev_flooding=False, ElevMask=None):
-    
+def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, limit_low_elev_flooding=False, ElevMask=None):
+
     #These are gridded data from Curve Parameter or VDT Database File
-    T_Rast = np.zeros((nrows,ncols))
-    W_Rast = np.zeros((nrows,ncols))
-    T_Rast = T_Rast - 1.0
-    W_Rast = W_Rast - 1.0
+    T_Rast = np.full((nrows, ncols), -1.)
+    W_Rast = np.full((nrows, ncols), -1.)
     
     
     #Calculate an Average Top Width and Depth for each stream reach.
     #  The Depths are purposely adjusted to the DEM that you are using (this addresses issues with using the original or bathy dem)
-    (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast) = Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth)
+    (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast) = Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet)
     #(WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
     
     
@@ -1043,9 +1047,12 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, Mi
     return Flood[1:nrows+1,1:ncols+1]
 
 
-def Set_Stream_Locations(nrows, ncols, infilename):
+def Set_Stream_Locations(nrows: int, ncols: int, infilename: str):
     S = np.zeros((nrows,ncols))  #Create an array
-    df = pd.read_csv(infilename)
+    if infilename.endswith('.parquet'):
+        df = pd.read_parquet(infilename)
+    else:
+        df = pd.read_csv(infilename)
     S[df['Row'].values, df['Col'].values] = df['COMID'].values
     return S
 
@@ -1131,7 +1138,8 @@ def remove_cells_not_connected(flood_array: np.ndarray, streams_array: np.ndarra
     # Keep only connected chunks in flood_array
     return flood_array * mask
 
-def Curve2Flood_MainFunction(input_file):
+def Curve2Flood_MainFunction(input_file: str, 
+                             quiet: bool = False):
 
     """
     Main function that takes the input file and runs the flood mapping.
@@ -1295,8 +1303,7 @@ def Curve2Flood_MainFunction(input_file):
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
             FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to_ID, MinCOMID, COMID_Unique_Flow)
-        Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, num_comids, MinCOMID, MaxCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth)
-        
+        Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet)        
         Bathy_Yes = False  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
         Flood_Ensemble = Flood_Ensemble + Flood
     
@@ -1373,9 +1380,9 @@ def Curve2Flood_MainFunction(input_file):
             del(ARBathyMas)
     
     if Bathy_Yes:
-        ARBathy[np.isnan(ARBathy)] = -99  #This converts all nan values to a 0
+        ARBathy[np.isnan(ARBathy)] = -99.000  #This converts all nan values to a -99
         ARBathy = ARBathy * ARBathyMask
-        ARBathy = np.where(ARBathyMask==1, ARBathy, -9999)
+        ARBathy = np.where(ARBathyMask==1, ARBathy, -9999.000)
         # Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
         Bathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask)
         # Optionally add Perlin noise
