@@ -796,6 +796,96 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
     
     return Flooded
 
+@njit(cache=True)
+def create_gaussian_kernel_2d_manual(sigma, kernel_size):
+    """
+    Create a 2D Gaussian kernel using only basic operations (no np.meshgrid).
+    
+    Args:
+        sigma (float): Standard deviation of the Gaussian.
+        kernel_size (int): Size of the kernel (must be odd).
+
+    Returns:
+        2D NumPy array: Normalized Gaussian kernel.
+    """
+    kernel = np.zeros((kernel_size, kernel_size), dtype=np.float64)
+    center = kernel_size // 2
+    sum_val = 0.0
+
+    for i in range(kernel_size):
+        for j in range(kernel_size):
+            x = i - center
+            y = j - center
+            kernel[i, j] = np.exp(-(x**2 + y**2) / (2.0 * sigma**2))
+            sum_val += kernel[i, j]
+
+    # Normalize the kernel
+    for i in range(kernel_size):
+        for j in range(kernel_size):
+            kernel[i, j] /= sum_val
+
+    return kernel
+
+@njit(cache=True)
+def pad_image_reflect(image, pad):
+    """Manually pad the image using reflection (mirror) padding."""
+    nrows, ncols = image.shape
+    padded = np.zeros((nrows + 2 * pad, ncols + 2 * pad), dtype=np.float64)
+
+    # Copy center
+    for i in range(nrows):
+        for j in range(ncols):
+            padded[i + pad, j + pad] = image[i, j]
+
+    # Reflect top and bottom
+    for j in range(ncols):
+        for p in range(pad):
+            padded[p, j + pad] = image[pad - p, j]           # Top reflect
+            padded[nrows + pad + p, j + pad] = image[nrows - 1 - p, j]  # Bottom reflect
+
+    # Reflect left and right
+    for i in range(nrows):
+        for p in range(pad):
+            padded[i + pad, p] = image[i, pad - p]           # Left reflect
+            padded[i + pad, ncols + pad + p] = image[i, ncols - 1 - p]  # Right reflect
+
+    # Reflect corners
+    for p1 in range(pad):
+        for p2 in range(pad):
+            padded[p1, p2] = image[pad - p1, pad - p2]  # Top-left
+            padded[p1, -1 - p2] = image[pad - p1, ncols - 1 - p2]  # Top-right
+            padded[-1 - p1, p2] = image[nrows - 1 - p1, pad - p2]  # Bottom-left
+            padded[-1 - p1, -1 - p2] = image[nrows - 1 - p1, ncols - 1 - p2]  # Bottom-right
+
+    return padded
+
+@njit(cache=True)
+def gaussian_blur_numba_full(image, sigma):
+    kernel_size = int(6 * sigma + 1)
+    pad = kernel_size // 2
+    kernel = create_gaussian_kernel_2d_manual(sigma, kernel_size)
+    padded_image = pad_image_reflect(image, pad)
+    blurred_image = np.zeros_like(image)
+    nrows, ncols = image.shape
+    for i in range(pad, nrows - pad):
+        for j in range(pad, ncols - pad):
+            acc = 0.0
+            weight_sum = 0.0
+            for ki in range(kernel_size):
+                for kj in range(kernel_size):
+                    ii = i - pad + ki
+                    jj = j - pad + kj
+                    val = padded_image[ii, jj]
+                    if val != -9999.0:  # Check for valid pixel
+                        acc += val * kernel[ki, kj]
+                        weight_sum += kernel[ki, kj]
+            if weight_sum > 0:
+                blurred_image[i, j] = acc / weight_sum
+            else:
+                blurred_image[i, j] = padded_image[i, j]  # fallback if no good neighbors
+
+    return blurred_image
+
 
 # def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
 @njit(cache=True)
@@ -805,7 +895,7 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
     
     Max_TW_to_Search_for_Bathy_Point = 13
     
-    (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==0)
+    (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==-99)
     # LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
     num_cells_to_evaluate = len(r_cells_to_evaluate)
     if num_cells_to_evaluate>0:
@@ -854,15 +944,27 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
                         w_r_i = w_r[i]
                         w_c_i = w_c[i]
                         val = ARBathy[r, c]
+                        # if val != -9999.0:
                         weight = WeightBox[w_r_i, w_c_i]
                         total += val * weight
                         weight_total += weight
+                        # else:
+                        #     pass
 
                     if weight_total > 0:
                         Bathy[bathy_r, bathy_c] = total / weight_total
                     #print(Bathy[bathy_r,bathy_c])
 
-    Bathy = np.where(Bathy>0, Bathy, E)
+    # smooth the bathymetry before we finish
+    sigma_value = 1.0
+    Bathy = gaussian_blur_numba_full(Bathy, sigma=sigma_value)
+
+    # filter out any bathy data not in the water mask
+    Bathy = np.where(ARBathyMask==1, Bathy, -9999)   
+
+    # create the composite topobathymetric dataset
+    Bathy = np.where(Bathy!=-9999, Bathy, E)
+    Bathy = np.where(Bathy!=-99, Bathy, E)
 
     # # Optionally add Perlin noise
     # if add_noise:
@@ -875,6 +977,7 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
     #                                         persistence=noise_persistence, 
     #                                         lacunarity=noise_lacunarity)
     #             Bathy[i, j] += noise_value
+
 
     return Bathy[1:nrows+1, 1:ncols+1]
 
@@ -1270,9 +1373,9 @@ def Curve2Flood_MainFunction(input_file):
             del(ARBathyMas)
     
     if Bathy_Yes:
-        ARBathy[np.isnan(ARBathy)] = 0   #This converts all nan values to a 0
+        ARBathy[np.isnan(ARBathy)] = -99  #This converts all nan values to a 0
         ARBathy = ARBathy * ARBathyMask
-        ARBathy = np.where(ARBathyMask==1, ARBathy, -99)
+        ARBathy = np.where(ARBathyMask==1, ARBathy, -9999)
         # Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
         Bathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask)
         # Optionally add Perlin noise
