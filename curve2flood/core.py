@@ -787,202 +787,152 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
     
     return Flooded
 
-@njit(cache=True)
-def create_gaussian_kernel_2d_manual(sigma, kernel_size):
-    """
-    Create a 2D Gaussian kernel using only basic operations (no np.meshgrid).
-    
-    Args:
-        sigma (float): Standard deviation of the Gaussian.
-        kernel_size (int): Size of the kernel (must be odd).
 
-    Returns:
-        2D NumPy array: Normalized Gaussian kernel.
-    """
-    kernel = np.zeros((kernel_size, kernel_size), dtype=np.float64)
+@njit(cache=True)
+def create_gaussian_kernel_1d(sigma):
+    kernel_size = int(6 * sigma + 1)
+    if kernel_size % 2 == 0:
+        kernel_size += 1
     center = kernel_size // 2
+
+    kernel = np.zeros(kernel_size, dtype=np.float64)
     sum_val = 0.0
 
     for i in range(kernel_size):
-        for j in range(kernel_size):
-            x = i - center
-            y = j - center
-            kernel[i, j] = np.exp(-(x**2 + y**2) / (2.0 * sigma**2))
-            sum_val += kernel[i, j]
+        x = i - center
+        kernel[i] = np.exp(- (x**2) / (2.0 * sigma**2))
+        sum_val += kernel[i]
 
-    # Normalize the kernel
     for i in range(kernel_size):
-        for j in range(kernel_size):
-            kernel[i, j] /= sum_val
+        kernel[i] /= sum_val
 
     return kernel
 
 @njit(cache=True)
-def pad_image_reflect(image, pad):
-    """Manually pad the image using reflection (mirror) padding."""
+def convolve_rows(image, kernel):
     nrows, ncols = image.shape
-    padded = np.zeros((nrows + 2 * pad, ncols + 2 * pad), dtype=np.float64)
+    pad = len(kernel) // 2
+    output = np.zeros_like(image)
 
-    # Copy center
-    for i in range(nrows):
-        for j in range(ncols):
-            padded[i + pad, j + pad] = image[i, j]
-
-    # Reflect top and bottom
-    for j in range(ncols):
-        for p in range(pad):
-            padded[p, j + pad] = image[pad - p, j]           # Top reflect
-            padded[nrows + pad + p, j + pad] = image[nrows - 1 - p, j]  # Bottom reflect
-
-    # Reflect left and right
-    for i in range(nrows):
-        for p in range(pad):
-            padded[i + pad, p] = image[i, pad - p]           # Left reflect
-            padded[i + pad, ncols + pad + p] = image[i, ncols - 1 - p]  # Right reflect
-
-    # Reflect corners
-    for p1 in range(pad):
-        for p2 in range(pad):
-            padded[p1, p2] = image[pad - p1, pad - p2]  # Top-left
-            padded[p1, -1 - p2] = image[pad - p1, ncols - 1 - p2]  # Top-right
-            padded[-1 - p1, p2] = image[nrows - 1 - p1, pad - p2]  # Bottom-left
-            padded[-1 - p1, -1 - p2] = image[nrows - 1 - p1, ncols - 1 - p2]  # Bottom-right
-
-    return padded
-
-@njit(cache=True)
-def gaussian_blur_numba_full(image, sigma):
-    kernel_size = int(6 * sigma + 1)
-    pad = kernel_size // 2
-    kernel = create_gaussian_kernel_2d_manual(sigma, kernel_size)
-    padded_image = pad_image_reflect(image, pad)
-    blurred_image = np.zeros_like(image)
-    nrows, ncols = image.shape
-    for i in range(pad, nrows - pad):
-        for j in range(pad, ncols - pad):
+    for r in range(nrows):
+        for c in range(ncols):
             acc = 0.0
             weight_sum = 0.0
-            for ki in range(kernel_size):
-                for kj in range(kernel_size):
-                    ii = i - pad + ki
-                    jj = j - pad + kj
-                    val = padded_image[ii, jj]
-                    if val != -9999:  # Check for valid pixel
-                        acc += val * kernel[ki, kj]
-                        weight_sum += kernel[ki, kj]
+            for k in range(len(kernel)):
+                cc = c - pad + k
+                if cc >= 0 and cc < ncols:
+                    val = image[r, cc]
+                    if val != -9999.0:
+                        acc += val * kernel[k]
+                        weight_sum += kernel[k]
             if weight_sum > 0:
-                blurred_image[i, j] = acc / weight_sum
+                output[r, c] = acc / weight_sum
             else:
-                blurred_image[i, j] = padded_image[i, j]  # fallback if no good neighbors
+                output[r, c] = image[r, c]
+    return output
 
-    return blurred_image
-
-
-# def Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask, add_noise=False, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
 @njit(cache=True)
+def convolve_cols(image, kernel):
+    nrows, ncols = image.shape
+    pad = len(kernel) // 2
+    output = np.zeros_like(image)
+
+    for c in range(ncols):
+        for r in range(nrows):
+            acc = 0.0
+            weight_sum = 0.0
+            for k in range(len(kernel)):
+                rr = r - pad + k
+                if rr >= 0 and rr < nrows:
+                    val = image[rr, c]
+                    if val != -9999.0:
+                        acc += val * kernel[k]
+                        weight_sum += kernel[k]
+            if weight_sum > 0:
+                output[r, c] = acc / weight_sum
+            else:
+                output[r, c] = image[r, c]
+    return output
+
+@njit(cache=True)
+def gaussian_blur_separable(image, sigma):
+    kernel = create_gaussian_kernel_1d(sigma)
+    blurred = convolve_rows(image, kernel)
+    blurred = convolve_cols(blurred, kernel)
+    return blurred
+
+
+from scipy.ndimage import distance_transform_edt
+
+# @njit(cache=True)
 def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask):
     #Bathymetry
     Bathy = np.copy(ARBathy)
-    
-    Max_TW_to_Search_for_Bathy_Point = 13
-    
-    (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==-99.000)
-    # LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
-    num_cells_to_evaluate = len(r_cells_to_evaluate)
-    if num_cells_to_evaluate>0:
 
-        filled = False  # Flag to track if we succeed
+    
+    # Max_TW_to_Search_for_Bathy_Point = 13
+    
+    # (r_cells_to_evaluate, c_cells_to_evaluate) = np.where(ARBathy==-99.000)
+    # # LOG.info('Number of Bathy Cells to Fill: ' + str(len(r_cells_to_evaluate)))
+    # num_cells_to_evaluate = len(r_cells_to_evaluate)
+    # if num_cells_to_evaluate>0:
 
-        for bbb in range(num_cells_to_evaluate):
-            bathy_r = r_cells_to_evaluate[bbb]
-            bathy_c = c_cells_to_evaluate[bbb]
+    #     for bbb in range(num_cells_to_evaluate):
+    #         bathy_r = r_cells_to_evaluate[bbb]
+    #         bathy_c = c_cells_to_evaluate[bbb]
             
-            for COMID_TW_Bathy in range(1,Max_TW_to_Search_for_Bathy_Point):
-                b_r_min = max(bathy_r - COMID_TW_Bathy, 1)
-                b_r_max = min(bathy_r + COMID_TW_Bathy + 1, nrows + 1)
-                b_c_min = max(bathy_c - COMID_TW_Bathy, 1)
-                b_c_max = min(bathy_c + COMID_TW_Bathy + 1, ncols + 1)
+    #         for COMID_TW_Bathy in range(1,Max_TW_to_Search_for_Bathy_Point):
+    #             b_r_min = max(bathy_r - COMID_TW_Bathy, 1)
+    #             b_r_max = min(bathy_r + COMID_TW_Bathy + 1, nrows + 1)
+    #             b_c_min = max(bathy_c - COMID_TW_Bathy, 1)
+    #             b_c_max = min(bathy_c + COMID_TW_Bathy + 1, ncols + 1)
                 
-                # w_r_min = TW_for_WeightBox_ElipseMask-(bathy_r-b_r_min)
-                # w_r_max = TW_for_WeightBox_ElipseMask+b_r_max-bathy_r
-                # w_c_min = TW_for_WeightBox_ElipseMask-(bathy_c-b_c_min)
-                # w_c_max = TW_for_WeightBox_ElipseMask+b_c_max-bathy_c
+    #             (r_has_bathy, c_has_bathy) = np.where( ((ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) >=-98.99) | ((ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) != 0.000))
                 
-                # (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]*ElipseMask[COMID_TW_Bathy, w_r_min:w_r_max,w_c_min:w_c_max]) > 0   )
-                (r_has_bathy, c_has_bathy) = np.where( (ARBathy[b_r_min:b_r_max,b_c_min:b_c_max]*ARBathyMask[b_r_min:b_r_max,b_c_min:b_c_max]) >-99.000   )
-                
-                if len(r_has_bathy)>0:
+    #             if len(r_has_bathy)>0:
                     
-                    #This should be a list of rows and columns within the ARBathy that actually have bathymetry values
-                    r_has_bathy = r_has_bathy + b_r_min
-                    c_has_bathy = c_has_bathy + b_c_min
+    #                 #This should be a list of rows and columns within the ARBathy that actually have bathymetry values
+    #                 r_has_bathy = r_has_bathy + b_r_min
+    #                 c_has_bathy = c_has_bathy + b_c_min
                     
-                    #This should be a list of rows and columns for the Weight and Elipse Rasters.
-                    w_r = TW_for_WeightBox_ElipseMask-(r_has_bathy-b_r_min)
-                    w_c = TW_for_WeightBox_ElipseMask-(c_has_bathy-b_c_min)
+    #                 #This should be a list of rows and columns for the Weight and Elipse Rasters.
+    #                 w_r = TW_for_WeightBox_ElipseMask-(r_has_bathy-b_r_min)
+    #                 w_c = TW_for_WeightBox_ElipseMask-(c_has_bathy-b_c_min)
                     
-                    # Bathy[bathy_r,bathy_c] = (ARBathy[r_has_bathy,c_has_bathy] * WeightBox[w_r,w_c]).sum() / WeightBox[w_r,w_c].sum()
-                    total = 0.0
-                    weight_total = 0.0
-                    for i in range(len(r_has_bathy)):
-                        r = r_has_bathy[i]
-                        c = c_has_bathy[i]
-                        w_r_i = w_r[i]
-                        w_c_i = w_c[i]
-                        val = ARBathy[r, c]
-                        # if val != -9999.0:
-                        weight = WeightBox[w_r_i, w_c_i]
-                        total += val * weight
-                        weight_total += weight
-                        # else:
-                        #     pass
+    #                 # Build the weighted average of the bathymetry values
+    #                 total = 0.0
+    #                 weight_total = 0.0
+    #                 for i in range(len(r_has_bathy)):
+    #                     r = r_has_bathy[i]
+    #                     c = c_has_bathy[i]
+    #                     w_r_i = w_r[i]
+    #                     w_c_i = w_c[i]
+    #                     val = ARBathy[r, c]
+    #                     weight = WeightBox[w_r_i, w_c_i]
+    #                     total += val * weight
+    #                     weight_total += weight
 
-                    if weight_total > 0:
-                        Bathy[bathy_r, bathy_c] = total / weight_total
-                        filled = True
-                    #print(Bathy[bathy_r,bathy_c])
+    #                 if weight_total > 0:
+    #                     Bathy[bathy_r, bathy_c] = total / weight_total
 
 
-    # Fill any remaining -99.000 with nearest valid value ---
-    missing_mask = (Bathy<=-99.000) 
-
-    if np.any(missing_mask):
-        valid_mask = ~missing_mask
-
-        # Get coordinates of valid and missing points
-        valid_coords = np.argwhere(valid_mask)
-        missing_coords = np.argwhere(missing_mask)
-
-        # For each missing point, find the nearest valid point and assign its value
-        for mr, mc in missing_coords:
-            # Compute distances to all valid points
-            distances = np.sqrt((valid_coords[:,0] - mr)**2 + (valid_coords[:,1] - mc)**2)
-            nearest_idx = np.argmin(distances)
-            nearest_r, nearest_c = valid_coords[nearest_idx]
-            Bathy[mr, mc] = Bathy[nearest_r, nearest_c]
+    # replace the remaining bad values with the nearest valid points
+    # this Scipy function doesn't work with Numba, so Numba is turned off for this function
+    mask = (Bathy > -98.99)
+    # Find nearest valid points for all cells
+    distance, indices = distance_transform_edt(~mask, return_indices=True)
+    # Replace invalid points with the values from the nearest valid points
+    Bathy[~mask] = Bathy[indices[0][~mask], indices[1][~mask]]
 
     # smooth the bathymetry before we finish
     sigma_value = 1.0
-    Bathy = gaussian_blur_numba_full(Bathy, sigma=sigma_value)
+    Bathy = gaussian_blur_separable(Bathy, sigma=sigma_value)
 
     # filter out any bathy data not in the water mask
     Bathy = np.where(ARBathyMask==1, Bathy, -9999.000)   
 
     # Replace *any remaining bad values*, including -99, -9999, or NaN
-    Bathy = np.where(Bathy<=-99, E, Bathy)
-
-    # # Optionally add Perlin noise
-    # if add_noise:
-    #     # Move import here so as not to be a required dependency, since this is false
-    #     import noise
-    #     for i in range(nrows):
-    #         for j in range(ncols):
-    #             noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
-    #                                         octaves=noise_octaves, 
-    #                                         persistence=noise_persistence, 
-    #                                         lacunarity=noise_lacunarity)
-    #             Bathy[i, j] += noise_value
-
+    Bathy = np.where(Bathy<=-98.99, E, Bathy)
 
     return Bathy[1:nrows+1, 1:ncols+1]
 
@@ -1229,7 +1179,7 @@ def Curve2Flood_MainFunction(input_file: str,
     lon_base = float(minx) + 0.5*cellsize_x
         
         
-    E = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the STRM Raster Array
+    E = np.full((nrows+2, ncols+2), -9999.0)  #Create an array that is slightly larger than the STRM Raster Array and fill it with -9999.0
     E[1:(nrows+1), 1:(ncols+1)] = DEM
     E = E.astype(float)
     # we dont need the DEM array anymore
@@ -1354,7 +1304,7 @@ def Curve2Flood_MainFunction(input_file: str,
         LOG.info('   ' + BathyFromARFileName)
         try:
             (ARBath, ncolsar, nrowsar, cellsizear, yllar, yurar, xllar, xurar, latar, dem_geotransformar, dem_projectionar) = Read_Raster_GDAL(BathyFromARFileName)
-            ARBathy = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
+            ARBathy = np.full((nrows+2, ncols+2), -9999.0)  #Create an array that is slightly larger than the Bathy Raster Array
             ARBathy[1:(nrows+1), 1:(ncols+1)] = ARBath
             del(ARBath)
         except:
@@ -1375,8 +1325,8 @@ def Curve2Flood_MainFunction(input_file: str,
             #ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(ARBathyMas>0,1,0)
             #del(ARBathyMas)
             (ARBathyMas, ncolsar, nrowsar, cellsizear, yllar, yurar, xllar, xurar, latar, dem_geotransformar, dem_projectionar) = Read_Raster_GDAL(Flood_File)
-            ARBathyMask = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
-            ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(~np.isnan(ARBathyMas), np.where(ARBathyMas > 0, 1, 0), 0)
+            ARBathyMask = np.full((nrows+2, ncols+2), -9999.0) #Create an array that is slightly larger than the Bathy Raster Array
+            ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(~np.isnan(ARBathyMas), np.where(ARBathyMas > 0, 1, -9999.0), -9999.0)
             del(ARBathyMas)
     
     if Bathy_Yes:
