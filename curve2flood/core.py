@@ -31,7 +31,7 @@ except ModuleNotFoundError:
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-from scipy.interpolate import interp1d
+# from scipy.interpolate import interp1d
 from scipy.ndimage import label, generate_binary_structure
 from shapely.geometry import shape
 import tqdm 
@@ -266,17 +266,56 @@ def Find_TopWidth_at_Baseflow_when_using_VDT(QB, flow_values, top_width_values):
     Returns:
         float: TopWidth corresponding to QB.
     """
-    # for i in range(len(flow_values)):
-    #     if QB <= flow_values[i]:
-    #         return top_width_values[i]
-    # # If QB is larger than all flow values, return the last TopWidth
-    # return top_width_values[-1]
-    try:
-        top_width_at_baseflow = top_width_values.iloc[flow_values.searchsorted(QB)]
-    except:
-        # just use the smallest top-width if we can't find it
-        top_width_at_baseflow = top_width_values.min()
-    return top_width_at_baseflow
+    # try:
+    #     top_width_at_baseflow = top_width_values.iloc[flow_values.searchsorted(QB)]
+    # except:
+    #     # just use the smallest top-width if we can't find it
+    #     top_width_at_baseflow = top_width_values.min()
+    # return top_width_at_baseflow
+    for i in range(len(flow_values)):
+        if QB <= flow_values[i]:
+            return top_width_values[i]
+    # If QB is larger than all flow values, return the last TopWidth
+    return top_width_values[-1]
+
+@njit(cache=True)
+def interp1d_numba(x: np.ndarray, y: np.ndarray, xi: float | int) -> float:
+    """
+    Linearly interpolates/extrapolates a single value xi based on 1D arrays x and y.
+    Equivalent to calling: `interp1d(x, y, kind='linear', bounds_error=False, fill_value='extrapolate', assume_sorted=True)(xi)`
+    Parameters:
+    - x: 1D array (assumed sorted)
+    - y: 1D array of same length as x
+    - xi: scalar input to interpolate
+    Returns:
+    - yi: interpolated or extrapolated value
+    """
+    n = len(x)
+
+    if xi <= x[0]:
+        # extrapolate left
+        return y[0] + (xi - x[0]) * (y[1] - y[0]) / (x[1] - x[0]) if (x[1] - x[0]) != 0 else y[0]
+    elif xi >= x[n - 1]:
+        # extrapolate right
+        return y[n - 2] + (xi - x[n - 2]) * (y[n - 1] - y[n - 2]) / (x[n - 1] - x[n - 2]) if (x[n - 1] - x[n - 2]) != 0 else y[n - 1]
+
+    # binary search for correct interval
+    low = 0
+    high = n - 1
+    while high - low > 1:
+        mid = (high + low) // 2
+        if x[mid] > xi:
+            high = mid
+        else:
+            low = mid
+
+    # linear interpolation
+    x0 = x[low]
+    x1 = x[high]
+    y0 = y[low]
+    y1 = y[high]
+
+    return y0 + (xi - x0) * (y1 - y0) / (x1 - x0) if (x1 - x0) != 0 else y0
 
 def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COMID_Unique_Flow, COMID_Unique, T_Rast, W_Rast, TW_MultFact, quiet: bool):    
     LOG.debug('\nOpening and Reading ' + VDTDatabaseFileName)
@@ -290,6 +329,10 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
     # Add COMID flow information
     comid_flow_df = pd.DataFrame({'COMID': COMID_Unique, 'Flow': COMID_Unique_Flow})
     vdt_df = vdt_df.merge(comid_flow_df, on='COMID', how='left')
+
+    # Ensure row and col are integers
+    vdt_df['Row'] = vdt_df['Row'].astype(int)
+    vdt_df['Col'] = vdt_df['Col'].astype(int)
     
     # Extract the column indices for interpolation
     flow_cols = [list(vdt_df.columns).index(col) for col in vdt_df.columns if col.startswith('q_')]
@@ -300,11 +343,14 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
     def calculate_values(row: pd.Series):
         flow = row['Flow']
         qb = row['QBaseflow']
-        e_dem = E_DEM[int(row['Row']) + 1, int(row['Col']) + 1]
+        # e_dem = E_DEM[int(row['Row']) + 1, int(row['Col']) + 1]
+        e_dem = E_DEM[row['Row'].astype(int) + 1, row['Col'].astype(int) + 1]
 
         # Extract flow, TopWidth, and WSE values for interpolation
-        flow_values = row.iloc[flow_cols]
-        top_width_values = row.iloc[top_width_cols]
+        # flow_values = row.iloc[flow_cols]
+        # top_width_values = row.iloc[top_width_cols]
+        flow_values: np.ndarray = row.iloc[flow_cols].values
+        top_width_values: np.ndarray = row.iloc[top_width_cols].values
         # Interpolation functions
 
         if flow <= qb:
@@ -312,25 +358,33 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
             top_width = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
             depth = 0.001
             wse = row['Elev']
-        elif flow >= flow_values.iloc[-1]:
+        # elif flow >= flow_values.iloc[-1]:
+        elif flow >= flow_values[-1]:
             wse_values = row.iloc[wse_cols]
             # Above the maximum flow value
-            top_width = top_width_values.iloc[-1]
+            # top_width = top_width_values.iloc[-1]
+            top_width = top_width_values[-1]
             wse = wse_values.iloc[-1]
             depth = wse - e_dem
         else:
-            wse_values = row.iloc[wse_cols]
-            wse = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
-            top_width = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
+            # wse_values = row.iloc[wse_cols]
+            # wse = interp1d(flow_values, wse_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
+            # top_width = interp1d(flow_values, top_width_values, kind='linear', bounds_error=False, fill_value='extrapolate')(flow)
+            wse_values = row.iloc[wse_cols].values
+            wse = interp1d_numba(flow_values, wse_values, flow)
+            top_width = interp1d_numba(flow_values, top_width_values, flow)
             # Interpolated values
             wse = max(wse, e_dem)
-            depth = wse - e_dem
+            # depth = wse - e_dem
+            depth = max(wse - e_dem, 0.001)
 
         # Ensure TopWidth respects baseflow and scale
         baseflow_tw = Find_TopWidth_at_Baseflow_when_using_VDT(qb, flow_values, top_width_values)
         top_width = max(top_width, baseflow_tw) * TW_MultFact
-        # return pd.Series([top_width, depth, wse])
-        return[ top_width, depth, wse]
+        # # return pd.Series([top_width, depth, wse])
+        # return[ top_width, depth, wse]
+        # top_width = top_width * TW_MultFact
+        return [top_width, depth, wse]
 
     tqdm.tqdm.pandas(desc="Calculating from VDT", unit="rows", disable=quiet)
     # Apply the calculation function to each row
@@ -356,12 +410,14 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
     # Drop rows with NaN values introduced during outlier removal
     vdt_df = vdt_df.dropna(subset=['TopWidth', 'Depth', 'WSE'])
     
-    # Fill T_Rast and W_Rast
-    # for _, row in vdt_df.iterrows():
-    #     T_Rast[int(row['Row']), int(row['Col'])] = row['TopWidth']
-    #     W_Rast[int(row['Row']), int(row['Col'])] = row['WSE']
-    T_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['TopWidth']
-    W_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['WSE']
+    # # Fill T_Rast and W_Rast
+    # # for _, row in vdt_df.iterrows():
+    # #     T_Rast[int(row['Row']), int(row['Col'])] = row['TopWidth']
+    # #     W_Rast[int(row['Row']), int(row['Col'])] = row['WSE']
+    # T_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['TopWidth']
+    # W_Rast[vdt_df['Row'].astype(int), vdt_df['Col'].astype(int)] = vdt_df['WSE']
+    T_Rast[vdt_df['Row'], vdt_df['Col']] = vdt_df['TopWidth']
+    W_Rast[vdt_df['Row'], vdt_df['Col']] = vdt_df['WSE']
     
     # Calculate median values by COMID
     mean_values = vdt_df.groupby('COMID').agg({
@@ -377,10 +433,10 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
     # Get the maximum TopWidth for all COMIDs
     TopWidthMax = comid_result_df['TopWidth'].max()
 
-    # Clean up memory
-    del vdt_df
-    # Force garbage collection
-    gc.collect()
+    # # Clean up memory
+    # del vdt_df
+    # # Force garbage collection
+    # gc.collect()
 
     return (
         comid_result_df['TopWidth'].values,
@@ -510,6 +566,13 @@ def Write_Output_Raster_As_GeoDataFrame(raster_data, ncols, nrows, dem_geotransf
     # Write the data to the in-memory raster dataset
     raster_ds.GetRasterBand(1).WriteArray(raster_data)
 
+    # Set NoData value to NaN
+    nodata_value = np.nan
+    raster_ds.GetRasterBand(1).SetNoDataValue(nodata_value)
+
+    # Auto-generate a mask band that respects NoData
+    mask_band = raster_ds.GetRasterBand(1).GetMaskBand()
+
     # Create an in-memory vector layer for the polygonized data
     memory_driver = ogr.GetDriverByName('Memory')
     vector_ds = memory_driver.CreateDataSource('')
@@ -522,7 +585,7 @@ def Write_Output_Raster_As_GeoDataFrame(raster_data, ncols, nrows, dem_geotransf
     layer.CreateField(field)
 
     # Polygonize the raster and write to the vector layer
-    gdal.Polygonize(raster_ds.GetRasterBand(1), None, layer, 0, [], callback=None)
+    gdal.Polygonize(raster_ds.GetRasterBand(1), mask_band, layer, 0, [], callback=None)
 
     # Convert the OGR layer to GeoPandas GeoDataFrame
     polygons = []
@@ -599,6 +662,9 @@ def FloodAllLocalAreas(WSE, E_Box, r_min, r_max, c_min, c_max, r_use, c_use):
 @njit(cache=True)
 def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
     TW = int(TW_temp)  #This is the number of cells in the top-width
+
+    # 
+
     # ElipseMask = np.zeros((TW+1,int(TW*2+1),int(TW*2+1)))  #3D Array
     WeightBox = np.zeros((int(TW*2+1),int(TW*2+1)), dtype=np.float32)  #2D Array
     # ElevMask = np.ones((int(TW*2+1),int(TW*2+1)))  #2D Array    #This is set and used later, and only if limit_low_elev_flooding=True
@@ -653,7 +719,7 @@ def CreateWeightAndElipseMask(TW_temp, dx, dy, TW_MultFact):
 
 
 @njit(cache=True)
-def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth, limit_low_elev_flooding=False, ElevMask=None):
+def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth, flood_vdt_cells, limit_low_elev_flooding=False, ElevMask=None, limit_flood: int=0):
        
     COMID_Averaging_Method = 0
     
@@ -688,7 +754,7 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         
 
 
-        if WSE<0.001 or COMID_TW_m<0.00001 or (WSE-E[r,c])<0.001:
+        if WSE < 0.001 or COMID_TW_m < 0.00001 or (WSE - E[r,c]) < 0.001:
             continue
 
         
@@ -698,13 +764,17 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         COMID_TW = max(np.round(COMID_TW_m / dx), np.round(COMID_TW_m / dy))  #This is how many cells we will be looking at surrounding our stream cell
         
         #Find minimum elevation within the search box
-        if sd<1:
-            r_use = r
-            c_use = c
-        else:
-            for rr in range(r-sd,r+sd+1):
-                for cc in range(c-sd,c+sd+1):
-                    if rr>0 and rr<(nrows-1) and cc>0 and cc<=(ncols-1) and E[rr,cc]>0.1 and E[rr,cc] < E_Min:
+        # if sd<1:
+        #     r_use = r
+        #     c_use = c
+        # else:
+        #     for rr in range(r-sd,r+sd+1):
+        #         for cc in range(c-sd,c+sd+1):
+        #             if rr>0 and rr<(nrows-1) and cc>0 and cc<=(ncols-1) and E[rr,cc]>0.1 and E[rr,cc] < E_Min:
+        if sd >= 1:
+            for rr in range(max(r - sd, 0), min(r + sd + 1, nrows - 1)):
+                for cc in range(max(c - sd, 1), min(c + sd + 1, ncols - 1)):
+                    if E[rr,cc] > 0.1 and E[rr,cc] < E_Min:
                         E_Min = E[rr,cc]
                         r_use = rr
                         c_use = cc
@@ -788,19 +858,29 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
 
     # divide the values in WSE_Times_Weight by the 
     # values in Total_Weight
-    WSE_divided_by_weight = np.where(Total_Weight > 0, WSE_Times_Weight / Total_Weight, 0)
-
-
     # WSE_divided_by_weight = WSE_Times_Weight / Total_Weight
+    Total_Weight = np.where(Total_Weight == 0, 1e-12, Total_Weight)  # Avoid division by zero
+    WSE_divided_by_weight = WSE_Times_Weight / Total_Weight
 
-    
+
     #Also make sure all the Cells that have Stream are counted as flooded.
-    Flooded = np.where(WSE_divided_by_weight>E,1,0)
+    Flooded_array = np.where((WSE_divided_by_weight>E)&(E>-9998.0), 1, np.nan)
+
+    # Also make sure all the Cells that have Stream are counted as flooded.
+    if flood_vdt_cells:
+        for i in range(num_nonzero):
+            Flooded_array[RR[i],CC[i]] = 1
+
+    #Also make sure all the Cells that have Stream are counted as flooded.
+    Depth_array = np.where((WSE_divided_by_weight>E)&(E>-9998.0), WSE_divided_by_weight-E, np.nan)
+
+    #Also make sure all the Cells that have Stream are counted as flooded.
+    WSE_array = np.where((WSE_divided_by_weight>E)&(E>-9998.0), WSE_divided_by_weight, np.nan)
     
     for i in range(num_nonzero):
-        Flooded[RR[i],CC[i]] = 1
+        Flooded_array[RR[i],CC[i]] = 1
     
-    return Flooded
+    return Flooded_array, Depth_array, WSE_array
 
 
 @njit(cache=True)
@@ -880,7 +960,7 @@ def gaussian_blur_separable(image, sigma):
 from scipy.ndimage import distance_transform_edt
 
 # @njit(cache=True)
-def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask):
+def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask, Bathy_Use_Banks):
     #Bathymetry
     Bathy = np.copy(ARBathy)
 
@@ -944,29 +1024,35 @@ def Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_Elipse
     Bathy = gaussian_blur_separable(Bathy, sigma=sigma_value)
 
     # filter out any bathy data not in the water mask
-    Bathy = np.where(ARBathyMask==1, Bathy, -9999.000)   
+    Bathy = np.where(ARBathyMask==1, Bathy, E)   
 
     # Replace *any remaining bad values*, including -99, -9999, or NaN
     Bathy = np.where(Bathy<=-98.99, E, Bathy)
 
+    # replace any values below -9998.0 with a np.nan
+    Bathy = np.where(Bathy < -9998.0, np.nan, Bathy)
+
+    # if we used the WSE and baseflow, we don't want the bathymetry to be above the WSE
+    # bathymetry may be higher if we use bank elevations and bankfull discharge estimate
+    if Bathy_Use_Banks == False:
+        Bathy = np.where(Bathy > E, E, Bathy)
+
     return Bathy[1:nrows+1, 1:ncols+1]
 
-def add_noise(Bathy: np.ndarray, noise_scale=0.1, noise_octaves=1, noise_persistence=0.5, noise_lacunarity=2.0):
-    # Move import here so as not to be a required dependency, since this is false
-    import noise
-    for i in range(Bathy.shape[0]):
-        for j in range(Bathy.shape[1]):
-            noise_value = noise.pnoise2(i * noise_scale, j * noise_scale, 
-                                        octaves=noise_octaves, 
-                                        persistence=noise_persistence, 
-                                        lacunarity=noise_lacunarity)
-            Bathy[i, j] += noise_value
-
-def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet):
+def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet, linkno_to_twlimit=None):
     if Set_Depth>0.0:
         num_unique = len(COMID_Unique)
-        COMID_Unique_TW = np.ones(num_unique, dtype=float) * TopWidthPlausibleLimit
-        COMID_Unique_Depth = np.ones(num_unique, dtype=float) * Set_Depth
+
+        # Initialize all to -9999
+        COMID_Unique_TW = np.full(num_unique, -9999, dtype=np.float32)
+        COMID_Unique_Depth = np.full(num_unique, -9999, dtype=np.float32)
+
+        # Overwrite with limits if they are > 0
+        if TopWidthPlausibleLimit > 0:
+            COMID_Unique_TW[:] = TopWidthPlausibleLimit
+
+        if Set_Depth > 0:
+            COMID_Unique_Depth[:] = Set_Depth
         TopWidthMax = TopWidthPlausibleLimit 
     #Mike switched to default to VDT Database instead of Curve.  We can change this in the future.
     elif len(VDTDatabaseFileName)>1:
@@ -991,7 +1077,7 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
-def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, limit_low_elev_flooding=False, ElevMask=None):
+def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, limit_low_elev_flooding=False, ElevMask=None, linkno_to_twlimit=None):
 
     #These are gridded data from Curve Parameter or VDT Database File
     T_Rast = np.full((nrows, ncols), -1.)
@@ -1000,7 +1086,7 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMI
     
     #Calculate an Average Top Width and Depth for each stream reach.
     #  The Depths are purposely adjusted to the DEM that you are using (this addresses issues with using the original or bathy dem)
-    (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast) = Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet)
+    (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast) = Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, COMID_to_ID, MinCOMID, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet, linkno_to_twlimit=linkno_to_twlimit)
     #(WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
     
     
@@ -1008,18 +1094,18 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMI
     search_dist_for_min_elev = 0
     LOG.info('Creating Rough Flood Map Data...')
 
-    Flood = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth)
+    Flood_array, Depth_array, WSE_array = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique, COMID_to_ID, MinCOMID, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth, flood_vdt_cells)
     
     # we shouldn't need the T_Rast and W_Rast now
     del T_Rast, W_Rast
     # Force garbage collection
     gc.collect()
         
-    return Flood[1:nrows+1,1:ncols+1]
+    return Flood_array[1:nrows+1,1:ncols+1], Depth_array[1:nrows+1,1:ncols+1], WSE_array[1:nrows+1,1:ncols+1]
 
 
 def Set_Stream_Locations(nrows: int, ncols: int, infilename: str):
-    S = np.zeros((nrows,ncols), dtype=np.int64)  #Create an array
+    S = np.full((nrows, ncols), -9999, dtype=np.int64)  #Create an array
     if infilename.endswith('.parquet'):
         df = pd.read_parquet(infilename)
     else:
@@ -1055,6 +1141,20 @@ def Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LandCoverFile, 
     Flood_Ensemble[F > 0] = 100
 
     return Flood_Ensemble
+
+def Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(Depth_or_WSE_Ensemble, Flood_Ensemble):
+
+    # Identify valid positive cells in F > 0
+    source_mask =  (Flood_Ensemble > 0) & (Depth_or_WSE_Ensemble > 0)
+    target_mask = (Flood_Ensemble > 0) & (np.isnan(Depth_or_WSE_Ensemble))
+
+    # Distance transform to find nearest valid cell
+    distance, (nearest_y, nearest_x) = distance_transform_edt(~source_mask, return_indices=True)
+
+    # Fill in target_mask cells with nearest positive value
+    Depth_or_WSE_Ensemble[target_mask] = Depth_or_WSE_Ensemble[nearest_y[target_mask], nearest_x[target_mask]]
+
+    return Depth_or_WSE_Ensemble
 
 def read_input_file(input_file):
     """
@@ -1109,8 +1209,48 @@ def remove_cells_not_connected(flood_array: np.ndarray, streams_array: np.ndarra
     # Keep only connected chunks in flood_array
     return flood_array * mask
 
+def ReadInputFile(lines,P):
+    num_lines = len(lines)
+    for i in range(num_lines):
+        ls = lines[i].strip().split()
+        if len(ls)>1 and ls[0]==P:
+            if P=='LocalFloodOption' or P=='FloodLocalOnly':
+                return True
+            if P=='Flood_WaterLC_and_STRM_Cells':
+                return True
+            if P=='Set_Depth' or P=='FloodSpreader_SpecifyDepth':
+                return float(ls[1])
+            return ls[1]
+    if P=='Q_Fraction':
+        return 1.0
+    if P=='TopWidthPlausibleLimit':
+        return 1000.0
+    if P=='TW_MultFact':
+        return 3.0
+    if P=='Set_Depth' or P=='FloodSpreader_SpecifyDepth':
+        return float(-1.1)
+    if P=='LocalFloodOption' or P=='FloodLocalOnly':
+        return False
+    if P=='Flood_WaterLC_and_STRM_Cells':
+        return False
+    if P=='LAND_WaterValue':
+        return 80
+    if P=='Bathy_Use_Banks':
+        return False
+    if P=='Bathy_Use_Banks':
+        return False
+    if P=='OutDEP':
+        return None
+    if P=='OutWSE':
+        return None
+    Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
+    
+    return ''
+
+
 def Curve2Flood_MainFunction(input_file: str, 
-                             quiet: bool = False):
+                             quiet: bool = False,
+                             flood_vdt_cells: bool = True):
 
     """
     Main function that takes the input file and runs the flood mapping.
@@ -1125,6 +1265,8 @@ def Curve2Flood_MainFunction(input_file: str,
     LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
     StrmShp_File = ReadInputFile(lines,'StrmShp_File')
     Flood_File = ReadInputFile(lines,'OutFLD')
+    OutDEP = ReadInputFile(lines,'OutDEP')
+    OutWSE = ReadInputFile(lines,'OutWSE')
     FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
     FlowFileName = ReadInputFile(lines,'COMID_Flow_File') or ReadInputFile(lines,'Comid_Flow_File')
     VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
@@ -1148,11 +1290,13 @@ def Curve2Flood_MainFunction(input_file: str,
     Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
     LAND_WaterValue = ReadInputFile(lines,'LAND_WaterValue')
     LAND_WaterValue = int(LAND_WaterValue)
+    Bathy_Use_Banks = bool(ReadInputFile(lines,'Bathy_Use_Banks'))
 
     # Some checks
     if not FlowFileName:
         LOG.error("Flow file name is required.")
         return
+
 
     if not Flood_File:
         LOG.error("Flood file name is required.")
@@ -1214,9 +1358,9 @@ def Curve2Flood_MainFunction(input_file: str,
     dz = pow(dx*dx+dy*dy,0.5)
     
     #Get list of Unique Stream IDs.  Also find where all the cell values are.
-    B = np.zeros((nrows+2,ncols+2), dtype=np.int64)  #Create an array that is slightly larger than the STRM Raster Array
+    B = np.zeros((nrows+2,ncols+2), dtype=np.int32)  #Create an array that is slightly larger than the STRM Raster Array
     B[1:(nrows+1), 1:(ncols+1)] = S
-    B = B.astype(int)
+    # B = B.astype(int)
     (RR,CC) = np.where(B > 0)
     COMID_Unique = np.unique(B)
     COMID_Unique = np.delete(COMID_Unique, 0)  #We don't need the first entry of zero
@@ -1225,7 +1369,27 @@ def Curve2Flood_MainFunction(input_file: str,
     # Ensure it's treated as integers
     COMID_Unique = COMID_Unique.astype(int)
     COMID_Unique = np.sort(COMID_Unique)
-   
+
+    # Open the StrmShp_File if provided
+    if StrmShp_File:
+        # Read the shapefile
+        LOG.info('Opening ' + StrmShp_File)
+        Strm_gdf = gpd.read_file(StrmShp_File)
+        # filter the Strm_gdf to only include the COMIDs in the COMID_Unique array
+        Strm_gdf = Strm_gdf[Strm_gdf['LINKNO'].isin(COMID_Unique)]
+
+        # change the TopWidthPlausibleLimit to be weighted by the stream order column in Strm_gdf
+        if 'StrmOrder' in Strm_gdf.columns:
+            Strm_gdf['TopWidthPlausibleLimit'] = (Strm_gdf['StrmOrder']/max(Strm_gdf['StrmOrder'].values)) * TopWidthPlausibleLimit
+            # drop all columns in the GDF except for the LINKNO/COMID column and the TopWidthPlausibleLimit column
+            Strm_gdf = Strm_gdf[['LINKNO', 'TopWidthPlausibleLimit']]
+            # Build a lookup dictionary from the GDF
+            linkno_to_twlimit = dict(zip(Strm_gdf['LINKNO'], Strm_gdf['TopWidthPlausibleLimit']))
+            del Strm_gdf
+        else:
+            linkno_to_twlimit = None
+            del Strm_gdf
+  
     
     # find the number of unique COMID values
     num_comids = len(COMID_Unique)    
@@ -1256,15 +1420,17 @@ def Curve2Flood_MainFunction(input_file: str,
     num_flows = len(ls)-1
     LOG.info('Evaluating ' + str(num_flows) + ' Flow Events')
     
-    #Creating the Weight and Eclipse Boxes
+    #Creating the initial Weight and Eclipse Boxes
     LOG.info('Creating the Weight and Eclipse Boxes')
     TW = int( max( np.round(TopWidthPlausibleLimit/dx,0), np.round(TopWidthPlausibleLimit/dy,0) ) )  #This is how many cells we will be looking at surrounding our stream cell
     TW_for_WeightBox_ElipseMask = TW
     # (WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
     WeightBox = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
+
     
-    
-    Flood_Ensemble = np.zeros((nrows,ncols), dtype=np.float32)
+    Flood_Ensemble = np.zeros((nrows,ncols), dtype=np.int32)
+    Depth_Ensemble = np.zeros((nrows,ncols), dtype=np.float32)
+    WSE_Ensemble = np.zeros((nrows,ncols), dtype=np.float32)    
     
     #If you're setting a set-depth value for all streams, just need to simulate one flood event
     if Set_Depth>=0.0:
@@ -1276,17 +1442,23 @@ def Curve2Flood_MainFunction(input_file: str,
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
             FindFlowRateForEachCOMID_Ensemble(comid_file_lines, flow_event_num, COMID_to_ID, MinCOMID, COMID_Unique_Flow)
-        Flood = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet)        
+        Flood_array, Depth_array, WSE_array = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, MinCOMID, COMID_to_ID, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, linkno_to_twlimit=linkno_to_twlimit)        
         Bathy_Yes = False  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
-        Flood_Ensemble = Flood_Ensemble + Flood
-        # we should no longer need the flood array
-        del Flood
-        # Force garbage collection
-        gc.collect()
+        Flood_Ensemble = Flood_Ensemble + Flood_array
+        Depth_Ensemble = Depth_Ensemble + Depth_array
+        WSE_Ensemble = WSE_Ensemble + WSE_array
+        
+    # we should no longer need the flood array
+    del Flood_array, Depth_array, WSE_array
+    # Force garbage collection
+    gc.collect()
     
     #Turn into a percentage
-    Flood_Ensemble = (100 * Flood_Ensemble / num_flows).astype(int)
-
+    Flood_Ensemble = np.round((100 * Flood_Ensemble / num_flows), 2)
+    #Turn it into an average depth
+    Depth_Ensemble = np.round((Depth_Ensemble / num_flows), 2)
+    #Turn it into an average WSE
+    WSE_Ensemble = np.round((WSE_Ensemble / num_flows), 2)
 
     # If selected, we can also flood cells based on the Land Cover and the Stream Raster
     LOG.info(Flood_WaterLC_and_STRM_Cells)
@@ -1294,11 +1466,20 @@ def Curve2Flood_MainFunction(input_file: str,
         LOG.info('Flooding the Water-Related Land Cover and STRM cells')
         Flood_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LAND_File, LAND_WaterValue)
 
+        if OutDEP is not None:
+            Depth_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(Depth_Ensemble, Flood_Ensemble)
+        
+        if OutWSE is not None:
+            WSE_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(WSE_Ensemble, Flood_Ensemble)
+
+
     if Set_Depth < 0:
         LOG.info('Creating Ensemble Flood Map...' + str(Flood_File))
 
     # Remove crop circles and other disconnected cells
     flood_ensemble_corrected = remove_cells_not_connected(Flood_Ensemble, S)
+    depth_ensemble_corrected = remove_cells_not_connected(Depth_Ensemble, S)
+    wse_ensembled_corrected = remove_cells_not_connected(WSE_Ensemble, S)
 
     # Write the output raster
     out_ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(Flood_File, ncols, nrows, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "PREDICTOR=2"])
@@ -1307,9 +1488,25 @@ def Curve2Flood_MainFunction(input_file: str,
     out_ds.WriteArray(flood_ensemble_corrected)
     out_ds.FlushCache()
 
+    if OutDEP is not None:
+        # Write the output raster for depth
+        out_ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(OutDEP, ncols, nrows, 1, gdal.GDT_Float32, options=["COMPRESS=DEFLATE", "PREDICTOR=2"])
+        out_ds.SetGeoTransform(dem_geotransform)
+        out_ds.SetProjection(dem_projection)
+        out_ds.WriteArray(depth_ensemble_corrected)
+        out_ds.FlushCache()
+    
+    if OutWSE is not None:
+        # Write the output raster for WSE
+        out_ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(OutWSE, ncols, nrows, 1, gdal.GDT_Float32, options=["COMPRESS=DEFLATE", "PREDICTOR=2"])
+        out_ds.SetGeoTransform(dem_geotransform)
+        out_ds.SetProjection(dem_projection)
+        out_ds.WriteArray(wse_ensembled_corrected)
+        out_ds.FlushCache()
+
     if StrmShp_File:
         # convert the raster to a geodataframe
-        flood_gdf = Write_Output_Raster_As_GeoDataFrame(Flood_Ensemble, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Byte)
+        flood_gdf = Write_Output_Raster_As_GeoDataFrame(flood_ensemble_corrected, ncols, nrows, dem_geotransform, dem_projection, gdal.GDT_Byte)
         
         # the name of our flood shapefile
         shp_output_filename = f"{Flood_File[:-4]}.gpkg"
@@ -1327,7 +1524,7 @@ def Curve2Flood_MainFunction(input_file: str,
     #Bathymetry
     LOG.info('Working on Bathymetry')
     Bathy_Yes = False
-    if BathyFromARFileName is not None and BathyOutputFileName:
+    if BathyFromARFileName and os.path.exists(BathyFromARFileName) and BathyOutputFileName:
         Bathy_Yes = True
         LOG.info('Attempting to open these files to do the Bathymetry work:')
         LOG.info('   ' + BathyFromARFileName)
@@ -1351,8 +1548,10 @@ def Curve2Flood_MainFunction(input_file: str,
             # Force garbage collection
             gc.collect()
         except:
-            LOG.warning('Could not open ' + BathyWaterMaskFileName)
-            LOG.warning('Going to use the Flood Map ' + Flood_File)
+            if os.path.exists(BathyWaterMaskFileName):
+                LOG.warning('Could not open ' + BathyWaterMaskFileName)
+            if not quiet:
+                LOG.warning('Going to use the Flood Map ' + Flood_File)
             #ARBathyMas = np.where(~np.isnan(Flood_Ensemble), np.where(Flood_Ensemble > 0, 1, 0), 0)
             #ARBathyMask = np.zeros((nrows+2,ncols+2))  #Create an array that is slightly larger than the Bathy Raster Array
             #ARBathyMask[1:(nrows+1), 1:(ncols+1)] = np.where(ARBathyMas>0,1,0)
@@ -1369,10 +1568,7 @@ def Curve2Flood_MainFunction(input_file: str,
         ARBathy = ARBathy * ARBathyMask
         ARBathy = np.where(ARBathyMask==1, ARBathy, -9999.000)
         # Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
-        Bathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask)
-        # Optionally add Perlin noise
-        if False:
-            add_noise(Bathy)
+        Bathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask, Bathy_Use_Banks)
         # write the Bathy output raster
         Write_Output_Raster(BathyOutputFileName, Bathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
     else:
@@ -1390,122 +1586,3 @@ def Curve2Flood_MainFunction(input_file: str,
     return
 
 
-def ReadInputFile(lines,P):
-    num_lines = len(lines)
-    for i in range(num_lines):
-        ls = lines[i].strip().split()
-        if len(ls)>1 and ls[0]==P:
-            if P=='LocalFloodOption' or P=='FloodLocalOnly':
-                return True
-            if P=='Flood_WaterLC_and_STRM_Cells':
-                return True
-            if P=='Set_Depth' or P=='FloodSpreader_SpecifyDepth':
-                return float(ls[1])
-            return ls[1]
-    if P=='Q_Fraction':
-        return 1.0
-    if P=='TopWidthPlausibleLimit':
-        return 1000.0
-    if P=='TW_MultFact':
-        return 3.0
-    if P=='Set_Depth' or P=='FloodSpreader_SpecifyDepth':
-        return float(-1.1)
-    if P=='LocalFloodOption' or P=='FloodLocalOnly':
-        return False
-    if P=='Flood_WaterLC_and_STRM_Cells':
-        return False
-    if P=='LAND_WaterValue':
-        return 80
-    
-    return ''
-
-
-if __name__ == "__main__":
-
-    #MIF_Name_Testing = r"C:\Projects\2023_BathyTest\ARC_McKenzie_TestCase\LC_For_Bathy_Duplicate\LC_For_Bathy_Duplicate\ARC_InputFiles\ARC_Input_McKenzie_DEM_4269_FloodForecast.txt"
-    MIF_Name_Testing = ''
-
-    if len(MIF_Name_Testing)>2:
-        LOG.warning('\n\n')
-        LOG.warning('WARNING, YOU ARE USING A TESTING INPUT FILE!!!!')
-        LOG.warning('   ' + MIF_Name_Testing)
-        LOG.warning('\n\n')
-
-    #If a Main Input File is given, read in the input file
-    if len(sys.argv) > 1 or len(MIF_Name_Testing)>2:
-        if len(MIF_Name_Testing)>2:
-            MIF_Name = MIF_Name_Testing
-        else:
-            MIF_Name = sys.argv[1]
-        LOG.info('Main Input File Given: ' + MIF_Name)
-        
-        #Open the Input File
-        infile = open(MIF_Name,'r')
-        lines = infile.readlines()
-        infile.close()
-        
-        DEM_File = ReadInputFile(lines,'DEM_File')
-        STRM_File = ReadInputFile(lines,'Stream_File')
-        LAND_File = ReadInputFile(lines,'LU_Raster_SameRes')
-        StrmShp_File = ReadInputFile(lines,'StrmShp_File')
-        Flood_File = ReadInputFile(lines,'OutFLD')
-        FloodImpact_File = ReadInputFile(lines,'FloodImpact_File')
-        FlowFileName = ReadInputFile(lines,'COMID_Flow_File')
-        FlowFileName = ReadInputFile(lines,'Comid_Flow_File')
-        VDTDatabaseFileName = ReadInputFile(lines,'Print_VDT_Database')
-        CurveParamFileName = ReadInputFile(lines,'Print_Curve_File')
-        Q_Fraction = ReadInputFile(lines,'Q_Fraction')
-        TopWidthPlausibleLimit = ReadInputFile(lines,'TopWidthPlausibleLimit')
-        TW_MultFact = ReadInputFile(lines,'TW_MultFact')
-        Set_Depth = ReadInputFile(lines,'Set_Depth')
-        Set_Depth = float(Set_Depth)
-        Set_Depth2 = ReadInputFile(lines,'FloodSpreader_SpecifyDepth')  #This is the nomenclature for FloodSpreader
-        Set_Depth2 = float(Set_Depth2)
-        if Set_Depth2>0.0 and Set_Depth<0.0:
-            Set_Depth = Set_Depth2
-        LocalFloodOption = ReadInputFile(lines,'LocalFloodOption')
-        LocalFloodOption2 = ReadInputFile(lines,'FloodLocalOnly')  #This is the nomenclature for FloodSpreader
-        if LocalFloodOption2==True:
-            LocalFloodOption = True
-        BathyWaterMaskFileName = ReadInputFile(lines,'BathyWaterMask')
-        BathyFromARFileName = ReadInputFile(lines,'BATHY_Out_File')
-        BathyOutputFileName = ReadInputFile(lines,'FSOutBATHY')
-        Flood_WaterLC_and_STRM_Cells = ReadInputFile(lines,'Flood_WaterLC_and_STRM_Cells')
-    else:
-        LOG.warning('Moving forward with Default File Names')
-        #These are the main inputs to the model
-        Q_Fraction = 1.0
-        TopWidthPlausibleLimit = 200.0
-        TW_MultFact = 1.0
-        Set_Depth = 0.1
-        LocalFloodOption = False
-        MainFolder = 'C:/Projects/2023_MultiModelFloodMapping/Yellowstone_GeoGLOWS_FABDEM/'
-        DEM_File = MainFolder + 'DEM_FABDEM/Yellowstone_FABDEM.tif' 
-        STRM_File = MainFolder + 'STRM/Yellowstone_FABDEM_STRM_Raster_Clean.tif' 
-        LAND_File = ''
-        StrmShp_File = MainFolder + 'StrmShp/Streams_714_Flow_4326_Yellowstone.shp'
-        Flood_File = MainFolder + 'FloodMap/Yellowstone_Flood_PY.tif' 
-        FloodImpact_File = '' 
-        FlowFileName = MainFolder + 'FLOW/Yellowstone_FABDEM_Flow_COMID_Q.txt'
-
-        Flood_WaterLC_and_STRM_Cells = False
-        
-        #Option to input a Curve Paramater File, or the VDT_Database File
-        CurveParamFileName = MainFolder + 'VDT/Yellowstone_FABDEM_CurveFile_Initial.csv'
-        VDTDatabaseFileName = MainFolder + 'VDT/Yellowstone_FABDEM_VDT_Database_Initial.txt'
-        VDTDatabaseFileName = ''
-        
-        #Bathymetry Datasets
-        BathyWaterMaskFileName = ''
-        BathyFromARFileName = ''
-        BathyOutputFileName = ''
-    Q_Fraction = float(Q_Fraction)
-    TopWidthPlausibleLimit = float(TopWidthPlausibleLimit)
-    TW_MultFact = float(TW_MultFact)
-    
-    watervalue = 80
-    
-    Model_Start_Time = datetime.now()
-    Curve2Flood_MainFunction(DEM_File, STRM_File, LAND_File, watervalue, Flood_WaterLC_and_STRM_Cells, StrmShp_File, FlowFileName, CurveParamFileName, VDTDatabaseFileName, Flood_File, FloodImpact_File, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, LocalFloodOption, Set_Depth, BathyWaterMaskFileName, BathyFromARFileName, BathyOutputFileName)
-    Model_Simulation_Time = datetime.now() - Model_Start_Time
-    LOG.info('\n' + 'Simulation time (sec)= ' + str(Model_Simulation_Time.seconds))
