@@ -1021,9 +1021,9 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     LOG.info('Maximum Top Width = ' + str(TopWidthMax))
     
     if not quiet:
-        for comid in COMID_Unique:
+        for idx, comid in enumerate(COMID_Unique):
             if COMID_Unique_TW[comid]>TopWidthPlausibleLimit:
-                LOG.warning(f"Ignoring {comid}  {COMID_Unique[comid]}  {COMID_Unique_Flow[comid]}  {COMID_Unique_Flow[comid]*Q_Fraction}  {COMID_Unique_Depth[comid]}  {COMID_Unique_TW[comid]}")  
+                LOG.warning(f"Ignoring {comid}  {COMID_Unique_Flow[comid]}  {COMID_Unique_Flow[comid]*Q_Fraction}  {COMID_Unique_Depth[comid]}  {COMID_Unique_TW[comid]}")  
 
     if TopWidthPlausibleLimit < TopWidthMax:
         TopWidthMax = TopWidthPlausibleLimit
