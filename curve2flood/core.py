@@ -150,11 +150,18 @@ def convert_cell_size(dem_cell_size, dem_lower_left, dem_upper_right):
         projection_conversion_factor = 1000.0 * (d_lat_conv + d_lon_conv) / 2.0
     return x_cell_size, y_cell_size, projection_conversion_factor
 
-def FindFlowRateForEachCOMID_Ensemble(FlowFileName: str, flow_event_num: int, COMID_Unique_Flow: dict):  
+def FindFlowRateForEachCOMID_Ensemble(FlowFileName: str, flow_event_num: int, COMID_Unique_Flow: dict, COMID_Unique: np.ndarray):  
     if FlowFileName.endswith('.parquet'):
         flow_df = pd.read_parquet(FlowFileName)
     else:
         flow_df = pd.read_csv(FlowFileName)
+
+    # print(flow_df)
+    # col_name = flow_df.columns[0]
+    # # use only the flows that have a COMID that is in COMID_Unique array
+    # flow_df = flow_df[flow_df[col_name].isin(COMID_Unique)]
+
+    # print(flow_df)
 
     for row in flow_df.itertuples(index=False):
         COMID = row[0]
@@ -187,9 +194,8 @@ def filter_outliers(group):
     group = group[(group['WSE'] >= lower_bound_wse) & (group['WSE'] <= upper_bound_wse)]
     return group
 
-def Calculate_TW_D_ForEachCOMID(CurveParamFileName: str, COMID_Unique_Flow: dict, COMID_Unique, T_Rast, W_Rast, TW_MultFact):
-    # JLG Commented this out because its not being used
-    # COMID_NumRecord = np.zeros(num_unique, dtype=np.float32)
+def Calculate_TW_D_ForEachCOMID_CurveFile(CurveParamFileName: str, COMID_Unique_Flow: dict, COMID_Unique, T_Rast, W_Rast, TW_MultFact):
+
     LOG.debug('\nOpening and Reading ' + CurveParamFileName)
 
     # read the curve data in as a Pandas dataframe
@@ -198,18 +204,15 @@ def Calculate_TW_D_ForEachCOMID(CurveParamFileName: str, COMID_Unique_Flow: dict
     else:
         curve_df = pd.read_csv(CurveParamFileName)
 
-    # Reading the COMID and flow data in as Pandas dataframes
-    streamflow_df = pd.DataFrame()
-    # Adding the arrays as columns to the dataframe
-    streamflow_df['COMID'] = COMID_Unique
-    streamflow_df['Q'] = COMID_Unique_Flow.values()
+    # Add COMID flow information
+    comid_flow_df = pd.DataFrame(COMID_Unique_Flow.items(), columns=['COMID', 'Flow'])
 
     # merging the curve and streamflow data together
-    curve_df = pd.merge(curve_df, streamflow_df, how="left", on="COMID")
+    curve_df = curve_df.merge(comid_flow_df, on="COMID", how="left")
 
     # calculating depth and top-width with the COMID's discharge and the curve parameters
-    curve_df['Depth'] = curve_df['depth_a']*curve_df['Q']**curve_df['depth_b']
-    curve_df['TopWidth'] = curve_df['tw_a']*curve_df['Q']**curve_df['tw_b']
+    curve_df['Depth'] = curve_df['depth_a']*curve_df['Flow']**curve_df['depth_b']
+    curve_df['TopWidth'] = curve_df['tw_a']*curve_df['Flow']**curve_df['tw_b']
     curve_df = curve_df[curve_df['Depth']>0]
     curve_df = curve_df[curve_df['TopWidth']>0]
     curve_df['WSE'] = curve_df['Depth'] + curve_df['BaseElev']
@@ -223,23 +226,26 @@ def Calculate_TW_D_ForEachCOMID(CurveParamFileName: str, COMID_Unique_Flow: dict
         T_Rast[int(row['Row']), int(row['Col'])] = row['TopWidth'] * TW_MultFact
         W_Rast[int(row['Row']), int(row['Col'])] = row['Depth'] + row['BaseElev']
 
-    # Grouping by 'COMID' and calculating the median of 'TopWidth' and 'Depth' for each 'COMID'
-    median_top_width_by_comid = curve_df.groupby('COMID')['TopWidth'].median()
-    median_depth_by_comid = curve_df.groupby('COMID')['Depth'].median()
+    # Calculate median values by COMID
+    mean_values = curve_df.groupby('COMID').agg({
+        'TopWidth': 'max',
+        'Depth': 'mean',
+        'WSE': 'mean'
+    })
+    
+    # Map results back to the unique COMID list
+    comid_result_df = pd.DataFrame({'COMID': COMID_Unique})
+    comid_result_df = comid_result_df.merge(mean_values, on='COMID', how='left').fillna(0)
 
-    # Create output dicts
+    # Create dicts
     COMID_Unique_TW = create_numba_dict()
     COMID_Unique_Depth = create_numba_dict()
-
-    # Iterate through the pandas data series and create the output matrices
-    TopWidthMax = 0
-    for index, value in median_top_width_by_comid.items():
-        COMID_Unique_TW[int(index)] = value
-        if value > TopWidthMax:
-            TopWidthMax = value
-
-    for index, value in median_depth_by_comid.items():
-        COMID_Unique_Depth[int(index)] = value
+    for index, row in comid_result_df.iterrows():
+        COMID_Unique_TW[int(row['COMID'])] = row['TopWidth']
+        COMID_Unique_Depth[int(row['COMID'])] = row['Depth']
+    
+    # Get the maximum TopWidth for all COMIDs
+    TopWidthMax = comid_result_df['TopWidth'].max()
 
     return (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast)
 
@@ -309,6 +315,8 @@ def Calculate_TW_D_ForEachCOMID_VDTDatabase(E_DEM, VDTDatabaseFileName: str, COM
         vdt_df = pd.read_parquet(VDTDatabaseFileName)
     else:
         vdt_df = pd.read_csv(VDTDatabaseFileName)
+
+    
     
     # Add COMID flow information
     comid_flow_df = pd.DataFrame(COMID_Unique_Flow.items(), columns=['COMID', 'Flow'])
@@ -1016,7 +1024,7 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     elif len(VDTDatabaseFileName)>1:
         (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID_VDTDatabase(E, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, T_Rast, W_Rast, TW_MultFact)
     elif len(CurveParamFileName)>1:
-        (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID(CurveParamFileName, COMID_Unique_Flow, COMID_Unique,  T_Rast, W_Rast, TW_MultFact)
+        (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, T_Rast, W_Rast) = Calculate_TW_D_ForEachCOMID_CurveFile(CurveParamFileName, COMID_Unique_Flow, COMID_Unique,  T_Rast, W_Rast, TW_MultFact)
 
     LOG.info('Maximum Top Width = ' + str(TopWidthMax))
     
@@ -1046,8 +1054,6 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_F
     #Calculate an Average Top Width and Depth for each stream reach.
     #  The Depths are purposely adjusted to the DEM that you are using (this addresses issues with using the original or bathy dem)
     (COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast) = Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, COMID_Unique_Flow, COMID_Unique, Q_Fraction, T_Rast, W_Rast, TW_MultFact, TopWidthPlausibleLimit, dx, dy, Set_Depth, quiet, linkno_to_twlimit=linkno_to_twlimit)
-    #(WeightBox, ElipseMask) = CreateWeightAndElipseMask(TW, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
-    
     
     #Create a simple Flood Map Data
     search_dist_for_min_elev = 0
@@ -1412,7 +1418,7 @@ def Curve2Flood_MainFunction(input_file: str = None,
         LOG.info('Working on Flow Event ' + str(flow_event_num))
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
-            FindFlowRateForEachCOMID_Ensemble(FlowFileName, flow_event_num, COMID_Unique_Flow)
+            FindFlowRateForEachCOMID_Ensemble(FlowFileName, flow_event_num, COMID_Unique_Flow, COMID_Unique)
         Flood_array, Depth_array, WSE_array = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, linkno_to_twlimit=linkno_to_twlimit)        
         Bathy_Yes = False  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
         Flood_Ensemble = Flood_Ensemble + Flood_array
@@ -1458,12 +1464,14 @@ def Curve2Flood_MainFunction(input_file: str = None,
     if OutWSE:
         wse_ensembled_corrected = remove_cells_not_connected(WSE_Ensemble, S)
 
+
     # Write the output raster
     out_ds: gdal.Dataset = gdal.GetDriverByName("GTiff").Create(Flood_File, ncols, nrows, 1, gdal.GDT_Byte, options=["COMPRESS=DEFLATE", "PREDICTOR=2"])
     out_ds.SetGeoTransform(dem_geotransform)
     out_ds.SetProjection(dem_projection)
     out_ds.WriteArray(flood_ensemble_corrected)
     out_ds.FlushCache()
+    out_ds = None  # Close the dataset to ensure it's written to disk
 
     if OutDEP is not None:
         # Write the output raster for depth
@@ -1472,6 +1480,7 @@ def Curve2Flood_MainFunction(input_file: str = None,
         out_ds.SetProjection(dem_projection)
         out_ds.WriteArray(depth_ensemble_corrected)
         out_ds.FlushCache()
+        out_ds = None  # Close the dataset to ensure it's written to disk
     
     if OutWSE is not None:
         # Write the output raster for WSE
@@ -1480,6 +1489,7 @@ def Curve2Flood_MainFunction(input_file: str = None,
         out_ds.SetProjection(dem_projection)
         out_ds.WriteArray(wse_ensembled_corrected)
         out_ds.FlushCache()
+        out_ds = None  # Close the dataset to ensure it's written to disk
 
     if StrmShp_File:
         # convert the raster to a geodataframe
