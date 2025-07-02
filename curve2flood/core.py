@@ -711,6 +711,7 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         c_use = c
         E_Min = E[r,c]
         
+        COMID_Value = int(B[r,c])
         #Now start with rows and start flooding everything in site
         if Set_Depth>0.0:
             WSE = float(E[r_use,c_use] + Set_Depth)
@@ -736,7 +737,10 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         if COMID_TW_m > TW_m:
             COMID_TW_m = TW_m
 
-        COMID_TW = max(np.round(COMID_TW_m / dx), np.round(COMID_TW_m / dy))  #This is how many cells we will be looking at surrounding our stream cell
+        COMID_TW = int(max(np.round(COMID_TW_m / dx), np.round(COMID_TW_m / dy)))
+          #This is how many cells we will be looking at surrounding our stream cell
+
+
         
         # Find minimum elevation within the search box
         if sd >= 1:
@@ -747,10 +751,10 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
                         r_use = rr
                         c_use = cc
             
-        r_min = max(r_use - COMID_TW, 1)
-        r_max = min(r_use + COMID_TW + 1, nrows + 1)
-        c_min = max(c_use - COMID_TW, 1)
-        c_max = min(c_use + COMID_TW + 1, ncols + 1)
+        r_min = int(max(r_use - COMID_TW, 1))
+        r_max = int(min(r_use + COMID_TW + 1, nrows + 1))
+        c_min = int(max(c_use - COMID_TW, 1))
+        c_max = int(min(c_use + COMID_TW + 1, ncols + 1))
         
         #Find what would flood local
         if LocalFloodOption==True:
@@ -760,10 +764,10 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
         # This uses the weighting method from FloodSpreader to create a flood map
         # Here we use TW instead of COMID_TW.  This is because we are trying to find the center of the weight raster, which was set based on TW (not COMID_TW).  
         # COMID_TW mainly applies to the r_min, r_max, c_min, c_max
-        w_r_min = TW_for_WeightBox_ElipseMask-(r_use-r_min)
-        w_r_max = TW_for_WeightBox_ElipseMask+r_max-r_use
-        w_c_min = TW_for_WeightBox_ElipseMask-(c_use-c_min)
-        w_c_max = TW_for_WeightBox_ElipseMask+c_max-c_use
+        w_r_min = int(TW_for_WeightBox_ElipseMask - (r_use - r_min))
+        w_r_max = int(TW_for_WeightBox_ElipseMask + (r_max - r_use))
+        w_c_min = int(TW_for_WeightBox_ElipseMask - (c_use - c_min))
+        w_c_max = int(TW_for_WeightBox_ElipseMask + (c_max - c_use))
     
         if LocalFloodOption==True:
             WSE_Times_Weight[r_min:r_max,c_min:c_max] = WSE_Times_Weight[r_min:r_max,c_min:c_max] + WSE * WeightBox[w_r_min:w_r_max,w_c_min:w_c_max] * FloodLocalMask
@@ -833,6 +837,7 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
 
     # Create the Flooded array
     Flooded_array = np.where((WSE_divided_by_weight>E)&(E>-9998.0), 1, np.nan)
+    print("  Flooded_array.sum() =", np.nansum(Flooded_array))
 
     # Also make sure all the Cells that have Stream are counted as flooded.
     if flood_vdt_cells:
@@ -1041,15 +1046,17 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     Y_cells = np.round(TopWidthMax/dy,0)
     TW = int(max(Y_cells,X_cells))  #This is how many cells we will be looking at surrounding our stream cell
     
+    print('COMID_Unique_TW:', COMID_Unique_TW)
+    print('COMID_Unique_Depth:', COMID_Unique_Depth)
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
 # @profile
-def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, limit_low_elev_flooding=False, ElevMask=None, linkno_to_twlimit=None):
+def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, T_Rast, W_Rast, limit_low_elev_flooding=False, ElevMask=None, linkno_to_twlimit=None):
 
-    #These are gridded data from Curve Parameter or VDT Database File
-    T_Rast = np.full((nrows, ncols), -1.)
-    W_Rast = np.full((nrows, ncols), -1.)
-    
+    # #These are gridded data from Curve Parameter or VDT Database File
+    # T_Rast = np.full((nrows, ncols), -1.)
+    # W_Rast = np.full((nrows, ncols), -1.)
+      
     
     #Calculate an Average Top Width and Depth for each stream reach.
     #  The Depths are purposely adjusted to the DEM that you are using (this addresses issues with using the original or bathy dem)
@@ -1060,7 +1067,7 @@ def Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_F
     LOG.info('Creating Rough Flood Map Data...')
 
     Flood_array, Depth_array, WSE_array = CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, search_dist_for_min_elev, TopWidthMax, dx, dy, LocalFloodOption, COMID_Unique_TW, COMID_Unique_Depth, WeightBox, TW_for_WeightBox_ElipseMask, TW, TW_MultFact, TopWidthPlausibleLimit, Set_Depth, flood_vdt_cells)
-        
+    
     return Flood_array[1:nrows+1,1:ncols+1], Depth_array[1:nrows+1,1:ncols+1], WSE_array[1:nrows+1,1:ncols+1]
 
 
@@ -1102,34 +1109,37 @@ def Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LandCoverFile, 
 
     return Flood_Ensemble
 
-def Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(Depth_or_WSE_Ensemble, Flood_Ensemble):
+def Flood_Flooded_Cells_in_Depth_and_WSE_Map(Depth_or_WSE_Ensemble, Flood_Ensemble):
+    # Accept all non-NaN values as valid
+    source_mask =  (Flood_Ensemble > 0) & (Depth_or_WSE_Ensemble != 0)
+    target_mask = (Flood_Ensemble > 0) & (Depth_or_WSE_Ensemble == 0)
+    
+    # If there are no source cells, return as is
+    if not np.any(source_mask):
+        return Depth_or_WSE_Ensemble
 
-    # Identify valid positive cells in F > 0
-    source_mask =  (Flood_Ensemble > 0) & (Depth_or_WSE_Ensemble > 0)
-    target_mask = (Flood_Ensemble > 0) & (np.isnan(Depth_or_WSE_Ensemble))
-
-    # Distance transform to find nearest valid cell
+    # Use distance transform to find nearest valid cell
     distance, (nearest_y, nearest_x) = distance_transform_edt(~source_mask, return_indices=True)
 
-    # Fill in target_mask cells with nearest positive value
-    Depth_or_WSE_Ensemble[target_mask] = Depth_or_WSE_Ensemble[nearest_y[target_mask], nearest_x[target_mask]]
+    # Copy to avoid modifying original array (optional)
+    filled = Depth_or_WSE_Ensemble.copy()
+    filled[target_mask] = Depth_or_WSE_Ensemble[nearest_y[target_mask], nearest_x[target_mask]]
 
-    return Depth_or_WSE_Ensemble
+    # # Recalculate the source mask and target mask and fill any remaining NaN values with 0.01 m
+    # source_mask = (~np.isnan(Flood_Ensemble)) & (~np.isnan(filled))
+    # target_mask = (~np.isnan(Flood_Ensemble)) & (np.isnan(filled))
+    # if np.any(target_mask):
+    #     # Fill remaining NaN values with 0.01 m
+    #     filled[target_mask] = 0.01
 
-def read_input_file(input_file):
-    """
-    Reads the input configuration text file and extracts parameters.
-    Supports both space-separated and tab-separated files.
-    """
-    params = {}
-    with open(input_file, 'r') as file:
-        for line in file:
-            parts = line.strip().split('\t') if '\t' in line else line.strip().split()
-            if len(parts) > 1:
-                key = parts[0]
-                value = ' '.join(parts[1:])
-                params[key] = value
-    return params
+    # # Recalculate the source mask and target mask and fill any 0 values in the target mask with 0.01 m
+    # source_mask = (~np.isnan(Flood_Ensemble)) & (~np.isnan(filled))
+    # target_mask = (~np.isnan(Flood_Ensemble)) & (filled == 0.0)
+    # if np.any(target_mask):
+    #     # Fill remaining 0 values with 0.01 m
+    #     filled[target_mask] = 0.01
+
+    return filled
 
 def remove_cells_not_connected(flood_array: np.ndarray, streams_array: np.ndarray) -> np.ndarray:
     """
@@ -1400,11 +1410,11 @@ def Curve2Flood_MainFunction(input_file: str = None,
     WeightBox = CreateWeightAndElipseMask(TW_for_WeightBox_ElipseMask, dx, dy, TW_MultFact)  #3D Array with the same row/col dimensions as the WeightBox
 
     
-    Flood_Ensemble = np.zeros((nrows,ncols), dtype=np.int32)
+    Flood_Ensemble = np.full((nrows, ncols), np.nan, dtype=np.float32)
     if OutDEP:
-        Depth_Ensemble = np.zeros((nrows,ncols), dtype=np.float32)
+        Depth_Ensemble = np.full((nrows, ncols), np.nan, dtype=np.float32)
     if OutWSE:
-        WSE_Ensemble = np.zeros((nrows,ncols), dtype=np.float32)    
+        WSE_Ensemble = np.full((nrows, ncols), np.nan, dtype=np.float32)
     
     #If you're setting a set-depth value for all streams, just need to simulate one flood event
     if Set_Depth>=0.0:
@@ -1413,27 +1423,48 @@ def Curve2Flood_MainFunction(input_file: str = None,
     # Create comid to flow dict
     COMID_Unique_Flow = create_numba_dict()
 
+    # Create initial rasters once, outside the loop
+    T_Rast = np.full((nrows,ncols), -1.0)
+    W_Rast = np.full((nrows,ncols), -1.0)
+
     #Go through all the Flow Events
+    Flood_array_list = []
+    Depth_array_list = []
+    WSE_array_list = []
     for flow_event_num in range(num_flows):
         LOG.info('Working on Flow Event ' + str(flow_event_num))
+        # clear out last event’s values
+        T_Rast[:] = -1.0
+        W_Rast[:] = -1.0
         #Get an Average Flow rate associated with each stream reach.
         if Set_Depth<=0.000000001:
             FindFlowRateForEachCOMID_Ensemble(FlowFileName, flow_event_num, COMID_Unique_Flow, COMID_Unique)
-        Flood_array, Depth_array, WSE_array = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, linkno_to_twlimit=linkno_to_twlimit)        
+        Flood_array, Depth_array, WSE_array = Curve2Flood(E, B, RR, CC, nrows, ncols, dx, dy, COMID_Unique, COMID_Unique_Flow, CurveParamFileName, VDTDatabaseFileName, Q_Fraction, TopWidthPlausibleLimit, TW_MultFact, WeightBox, TW_for_WeightBox_ElipseMask, LocalFloodOption, Set_Depth, quiet, flood_vdt_cells, T_Rast, W_Rast, linkno_to_twlimit=linkno_to_twlimit)        
+        Flood_array_list.append(Flood_array)
+        Depth_array_list.append(Depth_array)
+        WSE_array_list.append(WSE_array)
         Bathy_Yes = False  #This keeps the Bathymetry only running on the first flow rate (no need to run it on all flow rates)
-        Flood_Ensemble = Flood_Ensemble + Flood_array
-        if OutDEP:
-            Depth_Ensemble = Depth_Ensemble + Depth_array
-        if OutWSE:
-            WSE_Ensemble = WSE_Ensemble + WSE_array
+        # Flood_Ensemble = Flood_Ensemble + Flood_array
+        # if OutDEP:
+        #     Depth_Ensemble = Depth_Ensemble + Depth_array
+        # if OutWSE:
+        #     WSE_Ensemble = WSE_Ensemble + WSE_array
         
     # we should no longer need the flood array
     del Flood_array, Depth_array, WSE_array
     # Force garbage collection
     gc.collect()
+
+    # Combine all flow events into a single ensemble
+    Flood_Ensemble = np.nansum(Flood_array_list, axis=0)
+    if OutDEP:
+        Depth_Ensemble = np.nansum(Depth_array_list, axis=0)
+    if OutWSE:
+        WSE_Ensemble = np.nansum(WSE_array_list, axis=0)
     
     #Turn into a percentage
     Flood_Ensemble = np.round((100 * Flood_Ensemble / num_flows), 2)
+
     if OutDEP:
         #Turn it into an average depth
         Depth_Ensemble = np.round((Depth_Ensemble / num_flows), 2)
@@ -1447,11 +1478,15 @@ def Curve2Flood_MainFunction(input_file: str = None,
         LOG.info('Flooding the Water-Related Land Cover and STRM cells')
         Flood_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Flood_Map(Flood_Ensemble, S, LAND_File, LAND_WaterValue)
 
-        if OutDEP is not None:
-            Depth_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(Depth_Ensemble, Flood_Ensemble)
-        
-        if OutWSE is not None:
-            WSE_Ensemble = Flood_WaterLC_and_STRM_Cells_in_Depth_and_WSE_Map(WSE_Ensemble, Flood_Ensemble)
+    # Flood_Ensemble = np.where(E[1:nrows+1, 1:ncols+1] < -9998, np.nan, Flood_Ensemble)
+    # Depth_Ensemble = np.where(E[1:nrows+1, 1:ncols+1] < -9998, np.nan, Depth_Ensemble)
+    # WSE_Ensemble = np.where(E[1:nrows+1, 1:ncols+1] < -9998, np.nan, WSE_Ensemble)
+
+    if OutDEP is not None:
+        Depth_Ensemble = Flood_Flooded_Cells_in_Depth_and_WSE_Map(Depth_Ensemble, Flood_Ensemble)
+    
+    if OutWSE is not None:
+        WSE_Ensemble = Flood_Flooded_Cells_in_Depth_and_WSE_Map(WSE_Ensemble, Flood_Ensemble)
 
 
     if Set_Depth < 0:
@@ -1463,6 +1498,16 @@ def Curve2Flood_MainFunction(input_file: str = None,
         depth_ensemble_corrected = remove_cells_not_connected(Depth_Ensemble, S)
     if OutWSE:
         wse_ensembled_corrected = remove_cells_not_connected(WSE_Ensemble, S)
+    
+    # fill the 0 cells that are in the Flood_Ensemble with 0.01 m
+    
+
+    # Replace any 0 values in the Flood_Ensemble, Depth_Ensemble, and WSE_Ensemble with NaN
+    Flood_Ensemble = np.where(Flood_Ensemble == 0, np.nan, Flood_Ensemble)
+    if OutDEP:
+        Depth_Ensemble = np.where(Depth_Ensemble == 0, np.nan, Depth_Ensemble)
+    if OutWSE:
+        WSE_Ensemble = np.where(WSE_Ensemble == 0, np.nan, WSE_Ensemble)
 
 
     # Write the output raster
