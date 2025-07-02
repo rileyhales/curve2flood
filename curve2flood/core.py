@@ -837,7 +837,6 @@ def CreateSimpleFloodMap(RR, CC, T_Rast, W_Rast, E, B, nrows, ncols, sd, TW_m, d
 
     # Create the Flooded array
     Flooded_array = np.where((WSE_divided_by_weight>E)&(E>-9998.0), 1, np.nan)
-    print("  Flooded_array.sum() =", np.nansum(Flooded_array))
 
     # Also make sure all the Cells that have Stream are counted as flooded.
     if flood_vdt_cells:
@@ -1046,8 +1045,6 @@ def Calculate_Depth_TopWidth_TWMax(E, CurveParamFileName, VDTDatabaseFileName, C
     Y_cells = np.round(TopWidthMax/dy,0)
     TW = int(max(Y_cells,X_cells))  #This is how many cells we will be looking at surrounding our stream cell
     
-    print('COMID_Unique_TW:', COMID_Unique_TW)
-    print('COMID_Unique_Depth:', COMID_Unique_Depth)
     return COMID_Unique_TW, COMID_Unique_Depth, TopWidthMax, TW, T_Rast, W_Rast
 
 # @profile
