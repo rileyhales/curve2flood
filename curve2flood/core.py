@@ -1332,8 +1332,9 @@ def create_numba_dict_from(keys: np.ndarray, values: np.ndarray) -> dict[int, fl
 def create_bathymetry(E: np.ndarray, nrows: int, ncols: int, dem_geotransform: tuple, dem_projection: str, BathyFromARFileName: str, BathyWaterMaskFileName: str, Flood_Ensemble: np.ndarray, BathyOutputFileName: str, WeightBox: np.ndarray, TW_for_WeightBox_ElipseMask: int, Bathy_Use_Banks: bool):
     LOG.info('Working on Bathymetry')
     ds: gdal.Dataset = gdal.Open(BathyFromARFileName)
-    ARBathy = np.full((nrows+2, ncols+2), -9999.0)  #Create an array that is slightly larger than the Bathy Raster Array
-    ARBathy[1:-1, 1:-1] = ds.ReadAsArray()
+    ARBathy = np.full((nrows+2, ncols+2), -9999.0, dtype=np.float32)  #Create an array that is slightly larger than the Bathy Raster Array
+    # Read raster as float32
+    ARBathy[1:-1, 1:-1] = ds.ReadAsArray().astype(np.float32)
     ds = None
 
     ARBathyMask = np.zeros((nrows+2,ncols+2), dtype=np.bool_)
@@ -1348,7 +1349,8 @@ def create_bathymetry(E: np.ndarray, nrows: int, ncols: int, dem_geotransform: t
     ARBathy = ARBathy * ARBathyMask
     ARBathy[ARBathyMask != 1] = -9999.000
     # Bathy = Create_Topobathy_Dataset(RR, CC, E, B, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, Bathy_Yes, ARBathy, ARBathyMask)
-    ARBathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask, Bathy_Use_Banks)
+    ARBathy = Create_Topobathy_Dataset(E, nrows, ncols, WeightBox, TW_for_WeightBox_ElipseMask, ARBathy, ARBathyMask, Bathy_Use_Banks).astype(np.float32)  # enforce again just in case
+
     # write the Bathy output raster
     Write_Output_Raster(BathyOutputFileName, ARBathy, ncols, nrows, dem_geotransform, dem_projection, "GTiff", gdal.GDT_Float32)
 

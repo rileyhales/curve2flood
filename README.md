@@ -48,4 +48,3 @@ Flood_WaterLC_and_STRM_Cells  False
 ```
 
 In the near future, we will develop additional documentation on the parameter options in Curve2Flood.
-"""
